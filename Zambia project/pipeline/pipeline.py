@@ -45,6 +45,9 @@ from urllib.parse import urlparse
 
 import pandas as pd
 
+PIPELINE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PIPELINE_DIR.parent
+
 def build_final_dataset(
     step6_csv: Path,
     out_csv: Path,
@@ -125,6 +128,10 @@ def build_final_dataset(
         "mining_related_confidence",
         "impact_confidence",
         "impact_evidence",
+        "mine_name",
+        "region",
+        "mineral_type",
+        "mining_company",
     ]
 
     final_cols = [c for c in desired_cols if c in df_filtered.columns]
@@ -456,7 +463,7 @@ def clean_text(s):
     return s
 
 
-INTERIM_GDELT_DIR = Path("data/interim/gdelt_event_context_daily")
+INTERIM_GDELT_DIR = PROJECT_ROOT / "data" / "interim" / "gdelt_event_context_daily"
 
 def _parse_date(s: str) -> date:
     return datetime.strptime(s.strip(), "%Y-%m-%d").date()
@@ -585,7 +592,7 @@ def main() -> None:
     run_dir = (
         Path(args.run_dir)
         if args.run_dir
-        else Path("data/processed/pipeline_runs") / f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
+        else PROJECT_ROOT / "data" / "processed" / "pipeline_runs" / f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
     )
     start_date = args.start_date
     end_date = args.end_date
@@ -645,7 +652,7 @@ def main() -> None:
 
     # Define numbered output paths (must match your pipeline filenames exactly)
     step1_csv = run_dir / "01_events_full_combined.csv"
-    step3_csv = run_dir / "03_enriched.csv"
+    step3_csv = run_dir / "03_zambia_events_enriched.csv"
     step4_csv = run_dir / "04_mining_filtered.csv"
     step5_csv = run_dir / "05_remaining.csv"
     step6_csv = run_dir / "06_second_classifier_final.csv"
