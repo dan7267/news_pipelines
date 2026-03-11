@@ -458,7 +458,7 @@ Tasks:
    - in_zambia: true/false
    - in_zambia_confidence: 0 to 1
 
-3) IF AND ONLYY IF mining_related = true AND in_zambia = true, extract any explicitly supported impacts from mining and categorise each into 3 levels using ONLY the taxonomy below:
+3) IF AND ONLY IF mining_related = true AND in_zambia = true, extract any explicitly supported impacts from mining and categorise each into 3 levels using ONLY the taxonomy below:
 
 TAXONOMY (YOU MUST USE THESE EXACT LABELS):
 {IMPACT_TAXONOMY}
@@ -480,7 +480,7 @@ Rules:
 - impact_evidence must be a list of objects with level1, level2, level3 and snippets (text excerpts from the text that support the impact classification)
 - If scrape failed or text is too short, mining_related must be false
 - Return JSON only with keys:
-  in_zambia, in_zambia_confidence, mining_related, mining_related_confidence, impacts, impact_confidence, impact_evidence
+  in_zambia, in_zambia_confidence, mining_related, mining_related_confidence, impacts, impact_confidence, impact_evidence, mine_name, region, mineral_type, mining_company
 
 ADDITIONAL ENTITY EXTRACTION
 
@@ -490,6 +490,7 @@ Rules:
 - Only extract information that appears clearly in the article.
 - Do not infer missing information.
 - If a field is not mentioned, return null.
+- If mining_related is false or in_zambia is false, set mine_name, mining_company, region and mineral_type to null.
 
 Fields:
 
@@ -497,8 +498,9 @@ mineral_type
 The main mineral or commodity associated with the mine or disruption.
 Examples: copper, cobalt, lithium, nickel, gold, iron ore, coal, rare earths.
 
-location
-The specific location of the mine or disruption.
+region
+The subnational region associated with the mine/event in Zambia, such as province, district, town or nearby area.
+Examples: Copperbelt Province, North-Western Province, Solwezi, Kitwe, Chingola.
 
 mine_name
 The specific mine or mining project if mentioned.
@@ -552,7 +554,7 @@ The company operating or owning the mine. Return the company name only (no descr
         "impact_evidence": [],
         "llm_error": f"{type(last_err).__name__}: {last_err}" if last_err else "unknown_error",
         "mineral_type": None,
-        "location": None,
+        "region": None,
         "mine_name": None,
         "mining_company": None,
     }
@@ -661,7 +663,7 @@ def run_stage2(
 
             # NEW entity fields
             r["mineral_type"] = ""
-            r["location"] = ""
+            r["region"] = ""
             r["mine_name"] = ""
             r["mining_company"] = ""
             continue
@@ -683,7 +685,7 @@ def run_stage2(
         r["impact_confidence"] = round(float(result.get("impact_confidence", 0.0)), 3) if gate_ok else 0.0
         # --- NEW ENTITY EXTRACTION ---
         r["mineral_type"] = _norm_str(result.get("mineral_type"))
-        r["location"] = _norm_str(result.get("location"))
+        r["region"] = _norm_str(result.get("region"))
         r["mine_name"] = _norm_str(result.get("mine_name"))
         r["mining_company"] = _norm_str(result.get("mining_company"))
 
