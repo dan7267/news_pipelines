@@ -465,18 +465,46 @@ TAXONOMY (YOU MUST USE THESE EXACT LABELS):
    
 Rules:
 - impacts must be a list (possible empty).
+- Each impact MUST be supported by a direct quote from the article text. If you cannot quote supporting text, DO NOT include the impact.
+
 - For each impact:
     - level1 MUST be exactly one of: Environmental, Social, Governance
     - level2 MUST be one of the subcategories under that level1, with exact wording.
     - level3 MUST be one of the specific impacts under that level2, with exact wording
+
 - You MUST select level2 and level3 by COPYING the exact text from the taxonomy. Do NOT paraphrase, do NOT invent new labels. 
 - Do not force impacts into a category if not clearly supported by the text. It is okay to have zero impacts. 
+
 - Only include impacts explicitly support by the article text
 - Only include impacts clearly linked to mining activity in Zambia
 - impact_evidence must be a list of objects with level1, level2, level3 and snippets (text excerpts from the text that support the impact classification)
 - If scrape failed or text is too short, mining_related must be false
 - Return JSON only with keys:
   in_zambia, in_zambia_confidence, mining_related, mining_related_confidence, impacts, impact_confidence, impact_evidence
+
+ADDITIONAL ENTITY EXTRACTION
+
+From the article text, extract the following mining-related entities
+
+Rules:
+- Only extract information that appears clearly in the article.
+- Do not infer missing information.
+- If a field is not mentioned, return null.
+
+Fields:
+
+mineral_type
+The main mineral or commodity associated with the mine or disruption.
+Examples: copper, cobalt, lithium, nickel, gold, iron ore, coal, rare earths.
+
+location
+The specific location of the mine or disruption.
+
+mine_name
+The specific mine or mining project if mentioned.
+
+mining_company
+The company operating or owning the mine. Return the company name only (no descriptors). 
 """
 
     user = {
@@ -523,6 +551,10 @@ Rules:
         "impact_confidence": 0.0,
         "impact_evidence": [],
         "llm_error": f"{type(last_err).__name__}: {last_err}" if last_err else "unknown_error",
+        "mineral_type": None,
+        "location": None,
+        "mine_name": None,
+        "mining_company": None,
     }
 
 
@@ -626,6 +658,12 @@ def run_stage2(
             r["impact_evidence"] = ""
             r["in_zambia"] = False
             r["in_zambia_confidence"] = 0.0
+
+            # NEW entity fields
+            r["mineral_type"] = ""
+            r["location"] = ""
+            r["mine_name"] = ""
+            r["mining_company"] = ""
             continue
 
         result = llm_stage2(
@@ -643,7 +681,11 @@ def run_stage2(
         r["in_zambia_confidence"] = round(float(result.get("in_zambia_confidence", 0.0)), 3)
         gate_ok = bool(r["in_zambia"]) and bool(r["mining_related"])
         r["impact_confidence"] = round(float(result.get("impact_confidence", 0.0)), 3) if gate_ok else 0.0
-
+        # --- NEW ENTITY EXTRACTION ---
+        r["mineral_type"] = _norm_str(result.get("mineral_type"))
+        r["location"] = _norm_str(result.get("location"))
+        r["mine_name"] = _norm_str(result.get("mine_name"))
+        r["mining_company"] = _norm_str(result.get("mining_company"))
 
         impacts = result.get("impacts", [])
         if gate_ok and isinstance(impacts, list) and impacts:
