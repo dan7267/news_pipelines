@@ -2,7 +2,7 @@
 set -euo pipefail
 
 BUCKET="${1:?Need S3 bucket name}"
-REPO_DIR="${2:-$HOME/news_pipelines}"
+REPO_DIR="${2:-$HOME/Zambia project}"
 
 cd "$REPO_DIR"
 
