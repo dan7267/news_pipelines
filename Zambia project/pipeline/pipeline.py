@@ -594,8 +594,11 @@ def main() -> None:
         if args.run_dir
         else PROJECT_ROOT / "data" / "processed" / "pipeline_runs" / f"{start.strftime('%Y%m%d')}_{end.strftime('%Y%m%d')}"
     )
-    start_date = args.start_date
-    end_date = args.end_date
+    # start_date = args.start_date
+    # end_date = args.end_date
+    # run_id = f"{start_date}_{end_date}"
+    start_date = start.isoformat()
+    end_date = end.isoformat()
     run_id = f"{start_date}_{end_date}"
     paths = make_paths(run_dir)
 

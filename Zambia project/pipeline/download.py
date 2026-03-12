@@ -10,12 +10,13 @@ from typing import Optional, List, Tuple
 MASTER = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
 TARGET_SUFFIX = ".export.CSV.zip"
 
-# One file per day
-OUT_DIR = Path("data/interim/gdelt_event_context_daily")
+PIPELINE_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = PIPELINE_DIR.parent
+
+OUT_DIR = PROJECT_ROOT / "data" / "interim" / "gdelt_event_context_daily"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
-# Track processed 15-min files so reruns don't duplicate
-STATE_DIR = Path("data/interim/_state/gdelt")
+STATE_DIR = PROJECT_ROOT / "data" / "interim" / "_state" / "gdelt"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # --- Full GDELT Events export schema (standard order) ---
@@ -215,5 +216,10 @@ def main(target_day: str) -> None:
 
 
 if __name__ == "__main__":
-    day_to_process = input("Enter date to process (YYYYMMDD): ").strip()
-    main(day_to_process)
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--date", required=True, help="Date to process in YYYYMMDD format")
+    args = ap.parse_args()
+
+    main(args.date)

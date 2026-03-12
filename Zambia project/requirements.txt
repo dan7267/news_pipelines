@@ -1,0 +1,12 @@
+pandas
+numpy
+requests
+beautifulsoup4
+ftfy
+tqdm
+python-dotenv
+openai
+trafilatura
+newspaper3k
+lxml
+python-dateutil
