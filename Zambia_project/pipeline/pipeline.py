@@ -514,17 +514,40 @@ def download_range(start: date, end: date) -> List[Path]:
 
 
 def combine_daily_exports(daily_paths: List[Path], out_path: Path) -> Path:
-    print(f"\n[combine] Reading {len(daily_paths)} daily files...")
-    dfs = []
-    for p in daily_paths:
-        df = pd.read_csv(p, low_memory=False)
-        dfs.append(df)
-    combined = pd.concat(dfs, ignore_index=True)
+    print(f"\n[combine] Combining {len(daily_paths)} daily files...")
+
+    if not daily_paths:
+        raise ValueError("No daily files provided to combine_daily_exports.")
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
-    combined.to_csv(out_path, index=False, encoding="utf-8")
 
-    print(f"Saved: {out_path}  (rows={len(combined):,}, cols={combined.shape[1]})")
+    first_file = True
+    total_rows = 0
+    n_cols = None
+
+    for i, p in enumerate(daily_paths, start=1):
+        print(f"[combine] Reading {i}/{len(daily_paths)}: {p.name}")
+
+        df = pd.read_csv(p, low_memory=False)
+        total_rows += len(df)
+
+        if n_cols is None:
+            n_cols = df.shape[1]
+
+        df.to_csv(
+            out_path,
+            mode="w" if first_file else "a",
+            header=first_file,
+            index=False,
+            encoding="utf-8",
+        )
+
+        first_file = False
+
+        del df
+        gc.collect()
+
+    print(f"Saved: {out_path}  (rows={total_rows:,}, cols={n_cols})")
     return out_path
 
 
