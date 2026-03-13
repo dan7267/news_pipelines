@@ -42,7 +42,10 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Dict, Optional, Tuple
 from urllib.parse import urlparse
-
+from pathlib import Path
+from typing import List
+import gc
+import pandas as pd
 import pandas as pd
 
 PIPELINE_DIR = Path(__file__).resolve().parent
@@ -512,10 +515,6 @@ def download_range(start: date, end: date) -> List[Path]:
         paths.append(p)
     return paths
 
-from pathlib import Path
-from typing import List
-import gc
-import pandas as pd
 def combine_daily_exports(daily_paths: List[Path], out_path: Path) -> Path:
     print(f"\n[combine] Combining {len(daily_paths)} daily files...")
 
