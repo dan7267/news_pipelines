@@ -177,42 +177,70 @@ def main(target_day: str) -> None:
     """
     target_day: 'YYYYMMDD' (e.g., '20260224')
     """
+
+    print("Starting pipeline...", flush=True)  # DEBUG
+    print(f"Target day: {target_day}", flush=True)  # DEBUG
+
+    print("Downloading GDELT masterfile...", flush=True)  # DEBUG
     master_txt = requests.get(MASTER, timeout=60).text
+    print("Masterfile downloaded.", flush=True)  # DEBUG
+
+    print("Parsing masterfile...", flush=True)  # DEBUG
     rows = parse_masterfile(master_txt)
+    print(f"Total rows in masterfile: {len(rows)}", flush=True)  # DEBUG
 
     targets: List[Tuple[datetime, str]] = []
+
+    print("Filtering rows for target date...", flush=True)  # DEBUG
     for _, _, url in rows:
         if not url.endswith(TARGET_SUFFIX):
             continue
+
         ts = url_timestamp(url)
+
         if ts and ts.strftime("%Y%m%d") == target_day:
             targets.append((ts, url))
 
     if not targets:
-        print(f"No files found for date: {target_day}")
+        print(f"No files found for date: {target_day}", flush=True)
         return
 
     targets.sort()
-    print(f"Found {len(targets)} files for {target_day}. Processing...")
+
+    print(f"Found {len(targets)} files for {target_day}.", flush=True)  # DEBUG
+    print("Beginning processing loop...", flush=True)  # DEBUG
 
     for ts, url in targets:
+
+        filename = url.split("/")[-1]  # DEBUG
+        print(f"\n--- Processing file: {filename}", flush=True)  # DEBUG
+
         marker = processed_marker(ts)
+
         if marker.exists():
-            print(f"Skipping (already done): {url.split('/')[-1]}")
+            print(f"Skipping (already done): {filename}", flush=True)
             continue
 
         out_path = daily_output_path(ts)
+
+        print("Ensuring CSV header exists...", flush=True)  # DEBUG
         ensure_header(out_path)
 
-        # print(f"Processing: {ts.strftime('%H:%M')} -> {url.split('/')[-1]}")
+        print(f"Downloading + extracting ZIP: {filename}", flush=True)  # DEBUG
         extracted = extract_rows_from_zip(url)
+        print(f"Extracted {len(extracted)} rows", flush=True)  # DEBUG
 
+        print(f"Writing rows to {out_path}...", flush=True)  # DEBUG
         with open(out_path, "a", newline="", encoding="utf-8") as f:
             csv.writer(f).writerows(extracted)
 
+        print("Creating marker file...", flush=True)  # DEBUG
         marker.touch()
 
-    print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}")
+        print(f"Finished processing {filename}", flush=True)  # DEBUG
+
+    print("\nAll files processed!", flush=True)  # DEBUG
+    print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}", flush=True)
 
 
 if __name__ == "__main__":
