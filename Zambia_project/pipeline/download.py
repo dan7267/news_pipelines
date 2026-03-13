@@ -178,7 +178,7 @@ def main(target_day: str) -> None:
     target_day: 'YYYYMMDD' (e.g., '20260224')
     """
 
-    print("Starting pipeline...", flush=True)  # DEBUG
+    # print("Starting pipeline...", flush=True)  # DEBUG
     print(f"Target day: {target_day}", flush=True)  # DEBUG
 
     print("Downloading GDELT masterfile...", flush=True)  # DEBUG
@@ -208,7 +208,7 @@ def main(target_day: str) -> None:
     targets.sort()
 
     # print(f"Found {len(targets)} files for {target_day}.", flush=True)  # DEBUG
-    print("Beginning processing loop...", flush=True)  # DEBUG
+    # print("Beginning processing loop...", flush=True)  # DEBUG
 
     for ts, url in targets:
 
@@ -237,10 +237,10 @@ def main(target_day: str) -> None:
         # print("Creating marker file...", flush=True)  # DEBUG
         marker.touch()
 
-        print(f"Finished processing {filename}", flush=True)  # DEBUG
+        # print(f"Finished processing {filename}", flush=True)  # DEBUG
 
-    print("\nAll files processed!", flush=True)  # DEBUG
-    print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}", flush=True)
+    # print("\nAll files processed!", flush=True)  # DEBUG
+    # print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}", flush=True)
 
 
 if __name__ == "__main__":
