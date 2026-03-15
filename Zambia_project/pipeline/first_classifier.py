@@ -16,6 +16,14 @@ from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
 
+from datetime import timedelta
+import time
+
+
+def format_eta(seconds: float) -> str:
+    seconds = max(0, int(seconds))
+    return str(timedelta(seconds=seconds))
+
 
 # ------------------ CONFIG ------------------ #
 
@@ -163,10 +171,14 @@ def run_filter(
     df["mining_confidence"] = 0.0
 
     rows = df.to_dict(orient="records")
+    total_rows = len(rows)
 
-    print(f"Running conservative mining filter on {len(rows):,} rows...")
+    print(f"Running conservative mining filter on {total_rows:,} rows...")
 
-    for i, r in enumerate(tqdm(rows)):
+    start_time = time.time()
+    pbar = tqdm(rows, total=total_rows, desc="definitely-not-mining filter")
+
+    for i, r in enumerate(pbar, start=1):
         url = _norm_str(r.get("sourceurl"))
         title = _norm_str(r.get("title"))
         desc = _norm_str(r.get("description"))
@@ -181,12 +193,27 @@ def run_filter(
         r["definitely not mining"] = result["definitely_not_mining"]
         r["mining_confidence"] = round(result["confidence"], 3)
 
+        if i % 25 == 0 or i == total_rows:
+            elapsed = time.time() - start_time
+            sec_per_row = elapsed / i
+            rows_remaining = total_rows - i
+            eta_seconds = rows_remaining * sec_per_row
+
+            pbar.set_postfix({
+                "elapsed": format_eta(elapsed),
+                "eta": format_eta(eta_seconds),
+                "s/row": f"{sec_per_row:.2f}",
+            })
+
     out_df = pd.DataFrame(rows)
     out_df.to_csv(out_path, index=False, encoding="utf-8")
+
+    total_elapsed = time.time() - start_time
 
     print(f"\nSaved: {out_path}")
     print("Rows flagged for removal:",
           int(out_df["definitely not mining"].sum()))
+    print(f"First-classifier total time: {format_eta(total_elapsed)}")
 
 
 
