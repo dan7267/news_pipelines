@@ -121,6 +121,7 @@ def main() -> None:
             "--start", d.isoformat(),
             "--end", d.isoformat(),
             "--run-dir", str(run_dir),
+            "--stop-after-enrich",
         ]
 
         print(f"[{i}/{len(sample_days)}] Running sample day {d} ...")

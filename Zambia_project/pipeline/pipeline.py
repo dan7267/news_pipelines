@@ -609,7 +609,7 @@ def main() -> None:
     ap.add_argument("--run-dir", default=None, help="Directory to write numbered intermediate outputs")
     ap.add_argument("--model", default=None, help="Override OpenAI model for classifiers")
     ap.add_argument("--max-rows", type=int, default=None, help="Debug: limit rows passed to classifiers")
-
+    ap.add_argument("--stop-after-enrich", action="store_true", help = "Stop after metadata enrichment, before first classifier",)
     args = ap.parse_args()
 
     start, end = _get_dates_interactively_if_missing(args.start_date, args.end_date)
@@ -645,7 +645,9 @@ def main() -> None:
     print("\n[fetch_metadata] enriching with title/description")
     enrich_file(paths.zambia_collapsed, paths.enriched)
     print(f"Saved: {paths.enriched}")
-
+    if args.stop_after_enrich:
+        print("[pipeline] stopping after enrichment as requested")
+        return
     # 4) first_classifier
     model = args.model  # None => each module default, but we keep your explicit default below
 
