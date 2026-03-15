@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import argparse
+import shutil
 import subprocess
 import sys
 from datetime import datetime, timedelta
@@ -47,9 +48,11 @@ def main() -> None:
     chunk_days = 14
     base_run_dir = Path(args.base_run_dir)
     log_dir = base_run_dir / "_logs"
+    finals_dir = base_run_dir / "_finals"
 
     base_run_dir.mkdir(parents=True, exist_ok=True)
     log_dir.mkdir(parents=True, exist_ok=True)
+    finals_dir.mkdir(parents=True, exist_ok=True)
 
     cur = start
 
@@ -60,10 +63,13 @@ def main() -> None:
         run_name = f"{chunk_start:%Y%m%d}_{chunk_end:%Y%m%d}"
         run_dir = base_run_dir / run_name
         final_csv = run_dir / args.final_filename
+        final_copy = finals_dir / f"{run_name}_final.csv"
         log_file = log_dir / f"{run_name}.log"
 
         if final_csv.exists():
-            print(f"[skip] {run_name} already complete")
+            if not final_copy.exists():
+                shutil.copy2(final_csv, final_copy)
+            print(f"[skip] {run_name} already complete", flush=True)
             cur = chunk_end + timedelta(days=1)
             continue
 
@@ -80,22 +86,25 @@ def main() -> None:
             str(run_dir),
         ]
 
-        print(f"[run] {run_name}")
-        print("      " + " ".join(cmd))
-        print(f"      log -> {log_file}")
+        print(f"[run] {run_name}", flush=True)
+        print("      " + " ".join(cmd), flush=True)
+        print(f"      log -> {log_file}", flush=True)
 
         with open(log_file, "w") as f:
             subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, check=True)
 
-        print(f"[done] {run_name}")
+        if final_csv.exists():
+            shutil.copy2(final_csv, final_copy)
+
+        print(f"[done] {run_name}", flush=True)
         cur = chunk_end + timedelta(days=1)
 
-    print("All chunks complete.")
+    print("All chunks complete.", flush=True)
 
 
 if __name__ == "__main__":
     try:
         main()
     except subprocess.CalledProcessError as e:
-        print(f"Chunk failed with exit code {e.returncode}")
+        print(f"Chunk failed with exit code {e.returncode}", flush=True)
         sys.exit(e.returncode)
