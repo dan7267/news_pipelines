@@ -90,8 +90,24 @@ def main() -> None:
         print("      " + " ".join(cmd), flush=True)
         print(f"      log -> {log_file}", flush=True)
 
+        import subprocess
+
         with open(log_file, "w") as f:
-            subprocess.run(cmd, stdout=f, stderr=subprocess.STDOUT, check=True)
+            process = subprocess.Popen(
+                cmd,
+                stdout=subprocess.PIPE,
+                stderr=subprocess.STDOUT,
+                text=True
+            )
+
+            for line in process.stdout:
+                print(line, end="")     # prints live to terminal
+                f.write(line)           # writes to log file
+
+            process.wait()
+
+            if process.returncode != 0:
+                raise subprocess.CalledProcessError(process.returncode, cmd)
 
         if final_csv.exists():
             shutil.copy2(final_csv, final_copy)
