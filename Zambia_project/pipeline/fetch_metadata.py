@@ -26,6 +26,22 @@ from bs4 import BeautifulSoup
 from ftfy import fix_text
 from tqdm import tqdm
 
+import csv
+import sys
+
+
+def set_max_csv_field_size() -> None:
+    max_int = sys.maxsize
+    while True:
+        try:
+            csv.field_size_limit(max_int)
+            break
+        except OverflowError:
+            max_int = max_int // 10
+
+
+set_max_csv_field_size()
+
 USER_AGENT = "Mozilla/5.0 (compatible; CCML/1.0)"
 HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"}
 
