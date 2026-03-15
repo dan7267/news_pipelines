@@ -1,126 +1,204 @@
 from __future__ import annotations
 
-import argparse
-import shutil
+import csv
 import subprocess
 import sys
-from datetime import datetime, timedelta
+from dataclasses import dataclass
+from datetime import date, datetime, timedelta
 from pathlib import Path
 
 
-def parse_args() -> argparse.Namespace:
-    parser = argparse.ArgumentParser(
-        description="Run pipeline.py over a date range in 14-day chunks."
-    )
-    parser.add_argument("--start", required=True, help="Start date in YYYY-MM-DD format")
-    parser.add_argument("--end", required=True, help="End date in YYYY-MM-DD format")
-    parser.add_argument(
-        "--pipeline-script",
-        default="pipeline/pipeline.py",
-        help="Path to your pipeline script",
-    )
-    parser.add_argument(
-        "--base-run-dir",
-        default="data/processed/pipeline_runs",
-        help="Base directory where per-chunk run folders will be created",
-    )
-    parser.add_argument(
-        "--final-filename",
-        default="final.csv",
-        help="Filename whose existence marks a chunk as complete",
-    )
-    return parser.parse_args()
+# ----------------------------
+# CONFIG
+# ----------------------------
+BUCKET = "dan-zambia-pipeline-results"  # <-- CHANGE THIS
+S3_PREFIX = "chunk_outputs"
+BASE_RUN_DIR = Path("data/processed/pipeline_runs")
+PIPELINE_SCRIPT = Path("pipeline/pipeline.py")
+PYTHON_EXECUTABLE = sys.executable  # uses the current Python/venv
+STEP_DAYS = 14
 
 
-def to_date(s: str):
-    return datetime.strptime(s, "%Y-%m-%d").date()
+# ----------------------------
+# HELPERS
+# ----------------------------
+@dataclass
+class ChunkResult:
+    chunk_label: str
+    start: str
+    end: str
+    status: str
+    message: str
+    local_final: str
+    s3_uri: str
 
 
-def main() -> None:
-    args = parse_args()
-
-    start = to_date(args.start)
-    end = to_date(args.end)
-
-    if end < start:
-        raise ValueError("--end must be on or after --start")
-
-    chunk_days = 14
-    base_run_dir = Path(args.base_run_dir)
-    log_dir = base_run_dir / "_logs"
-    finals_dir = base_run_dir / "_finals"
-
-    base_run_dir.mkdir(parents=True, exist_ok=True)
-    log_dir.mkdir(parents=True, exist_ok=True)
-    finals_dir.mkdir(parents=True, exist_ok=True)
-
-    cur = start
-
-    while cur <= end:
-        chunk_start = cur
-        chunk_end = min(cur + timedelta(days=chunk_days - 1), end)
-
-        run_name = f"{chunk_start:%Y%m%d}_{chunk_end:%Y%m%d}"
-        run_dir = base_run_dir / run_name
-        final_csv = run_dir / args.final_filename
-        final_copy = finals_dir / f"{run_name}_final.csv"
-        log_file = log_dir / f"{run_name}.log"
-
-        if final_csv.exists():
-            if not final_copy.exists():
-                shutil.copy2(final_csv, final_copy)
-            print(f"[skip] {run_name} already complete", flush=True)
-            cur = chunk_end + timedelta(days=1)
-            continue
-
-        run_dir.mkdir(parents=True, exist_ok=True)
-
-        cmd = [
-            sys.executable,
-            args.pipeline_script,
-            "--start",
-            chunk_start.isoformat(),
-            "--end",
-            chunk_end.isoformat(),
-            "--run-dir",
-            str(run_dir),
-        ]
-
-        print(f"[run] {run_name}", flush=True)
-        print("      " + " ".join(cmd), flush=True)
-        print(f"      log -> {log_file}", flush=True)
-
-        import subprocess
-
-        with open(log_file, "w") as f:
-            process = subprocess.Popen(
-                cmd,
-                stdout=subprocess.PIPE,
-                stderr=subprocess.STDOUT,
-                text=True
-            )
-
-            for line in process.stdout:
-                print(line, end="")     # prints live to terminal
-                f.write(line)           # writes to log file
-
-            process.wait()
-
-            if process.returncode != 0:
-                raise subprocess.CalledProcessError(process.returncode, cmd)
-
-        if final_csv.exists():
-            shutil.copy2(final_csv, final_copy)
-
-        print(f"[done] {run_name}", flush=True)
+def daterange_chunks(start_d: date, end_d: date, step_days: int):
+    cur = start_d
+    while cur <= end_d:
+        chunk_end = min(cur + timedelta(days=step_days - 1), end_d)
+        yield cur, chunk_end
         cur = chunk_end + timedelta(days=1)
 
-    print("All chunks complete.", flush=True)
+
+def make_chunk_label(start_d: date, end_d: date) -> str:
+    return f"{start_d:%Y%m%d}_{end_d:%Y%m%d}"
+
+
+def make_s3_uri(chunk_label: str) -> str:
+    year = chunk_label[:4]
+    return f"s3://{BUCKET}/{S3_PREFIX}/{year}/{chunk_label}/final.csv"
+
+
+def s3_object_exists(s3_uri: str) -> bool:
+    result = subprocess.run(
+        ["aws", "s3", "ls", s3_uri],
+        stdout=subprocess.PIPE,
+        stderr=subprocess.PIPE,
+        text=True,
+    )
+    return result.returncode == 0
+
+
+def upload_to_s3(local_file: Path, s3_uri: str) -> None:
+    subprocess.run(
+        ["aws", "s3", "cp", str(local_file), s3_uri],
+        check=True,
+    )
+
+
+def run_pipeline(start_d: date, end_d: date, run_dir: Path) -> None:
+    cmd = [
+        PYTHON_EXECUTABLE,
+        str(PIPELINE_SCRIPT),
+        "--start",
+        start_d.isoformat(),
+        "--end",
+        end_d.isoformat(),
+        "--run-dir",
+        str(run_dir),
+    ]
+    subprocess.run(cmd, check=True)
+
+
+def append_summary_row(summary_csv: Path, row: ChunkResult) -> None:
+    write_header = not summary_csv.exists()
+    summary_csv.parent.mkdir(parents=True, exist_ok=True)
+
+    with summary_csv.open("a", newline="", encoding="utf-8") as f:
+        writer = csv.writer(f)
+        if write_header:
+            writer.writerow(
+                [
+                    "chunk_label",
+                    "start",
+                    "end",
+                    "status",
+                    "message",
+                    "local_final",
+                    "s3_uri",
+                ]
+            )
+        writer.writerow(
+            [
+                row.chunk_label,
+                row.start,
+                row.end,
+                row.status,
+                row.message,
+                row.local_final,
+                row.s3_uri,
+            ]
+        )
+
+
+# ----------------------------
+# MAIN
+# ----------------------------
+def main():
+    # ----------------------------
+    # CHANGE THESE DATES
+    # ----------------------------
+    overall_start = date(2021, 3, 11)
+    overall_end = date(2026, 3, 11)
+
+    summary_csv = Path("data/processed/run_chunks_summary.csv")
+
+    print(f"Running chunks from {overall_start} to {overall_end}")
+    print(f"Run dir base: {BASE_RUN_DIR}")
+    print(f"S3 destination: s3://{BUCKET}/{S3_PREFIX}/")
+
+    for start_d, end_d in daterange_chunks(overall_start, overall_end, STEP_DAYS):
+        chunk_label = make_chunk_label(start_d, end_d)
+        run_dir = BASE_RUN_DIR / chunk_label
+        local_final = run_dir / "final.csv"
+        s3_uri = make_s3_uri(chunk_label)
+
+        print(f"\n=== {chunk_label} ===")
+
+        # Skip if already uploaded
+        if s3_object_exists(s3_uri):
+            msg = "Already exists in S3, skipped."
+            print(msg)
+            append_summary_row(
+                summary_csv,
+                ChunkResult(
+                    chunk_label=chunk_label,
+                    start=start_d.isoformat(),
+                    end=end_d.isoformat(),
+                    status="skipped",
+                    message=msg,
+                    local_final=str(local_final),
+                    s3_uri=s3_uri,
+                ),
+            )
+            continue
+
+        try:
+            print(f"Running pipeline for {start_d} to {end_d} ...")
+            run_pipeline(start_d, end_d, run_dir)
+
+            if not local_final.exists():
+                raise FileNotFoundError(f"Expected final.csv not found: {local_final}")
+
+            print(f"Uploading {local_final} to {s3_uri} ...")
+            upload_to_s3(local_final, s3_uri)
+
+            msg = "Success"
+            print(msg)
+            append_summary_row(
+                summary_csv,
+                ChunkResult(
+                    chunk_label=chunk_label,
+                    start=start_d.isoformat(),
+                    end=end_d.isoformat(),
+                    status="success",
+                    message=msg,
+                    local_final=str(local_final),
+                    s3_uri=s3_uri,
+                ),
+            )
+
+        except Exception as e:
+            msg = str(e)
+            print(f"FAILED: {msg}")
+            append_summary_row(
+                summary_csv,
+                ChunkResult(
+                    chunk_label=chunk_label,
+                    start=start_d.isoformat(),
+                    end=end_d.isoformat(),
+                    status="failed",
+                    message=msg,
+                    local_final=str(local_final),
+                    s3_uri=s3_uri,
+                ),
+            )
+            # continue to next chunk instead of stopping everything
+            continue
+
+    print("\nDone.")
 
 
 if __name__ == "__main__":
-    try:
-        main()
-    except subprocess.CalledProcessError as e:
-        print(f"Chunk failed with exit code {e.returncode}", flush=True)
-        sys.exit(e.returncode)
+    main()
