@@ -1,23 +1,17 @@
-# stage_mining_filter.py
-# Conservative LLM filter: flag ONLY articles that are DEFINITELY NOT mining-related
-# Adds two columns:
-#   - "definitely not mining" (True/False)
-#   - "mining_confidence" (0–1)
-
 from __future__ import annotations
 
 import os
 import json
+import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Dict, Optional
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 import pandas as pd
 from dotenv import load_dotenv
 from openai import OpenAI
 from tqdm import tqdm
-
-from datetime import timedelta
-import time
 
 
 def format_eta(seconds: float) -> str:
@@ -35,7 +29,8 @@ OUT_PATH = IN_PATH.with_name(
     IN_PATH.stem + "_mining_filtered.csv"
 )
 
-DEFAULT_MODEL = "gpt-5-nano-2025-08-07"
+DEFAULT_MODEL = "gpt-5-mini"
+LLM_MAX_WORKERS = 4
 
 
 # ------------------ OPENAI SETUP ------------------ #
@@ -44,8 +39,6 @@ load_dotenv()
 api_key = os.getenv("OPENAI_API_KEY")
 if not api_key:
     raise RuntimeError("OPENAI_API_KEY not found.")
-
-client = OpenAI(api_key=api_key)
 
 
 # ------------------ HELPERS ------------------ #
@@ -118,6 +111,9 @@ TITLE: {title}
 DESCRIPTION: {description}
 """.strip()
 
+    # Create client inside the function for safer threaded usage
+    client = OpenAI(api_key=api_key)
+
     completion = client.chat.completions.create(
         model=model,
         messages=[
@@ -166,6 +162,14 @@ def run_filter(
     if max_rows:
         df = df.head(max_rows).copy()
 
+    if df.empty:
+        print(f"No rows to classify in {in_path}")
+        df["definitely not mining"] = pd.Series(dtype=bool)
+        df["mining_confidence"] = pd.Series(dtype=float)
+        out_path.parent.mkdir(parents=True, exist_ok=True)
+        df.to_csv(out_path, index=False, encoding="utf-8")
+        return
+
     # Ensure output columns exist
     df["definitely not mining"] = False
     df["mining_confidence"] = 0.0
@@ -174,11 +178,12 @@ def run_filter(
     total_rows = len(rows)
 
     print(f"Running conservative mining filter on {total_rows:,} rows...")
+    print(f"LLM workers: {LLM_MAX_WORKERS}")
 
     start_time = time.time()
-    pbar = tqdm(rows, total=total_rows, desc="definitely-not-mining filter")
 
-    for i, r in enumerate(pbar, start=1):
+    def classify_one(idx_row):
+        idx, r = idx_row
         url = _norm_str(r.get("sourceurl"))
         title = _norm_str(r.get("title"))
         desc = _norm_str(r.get("description"))
@@ -189,23 +194,39 @@ def run_filter(
             description=desc,
             model=model,
         )
+        return idx, result
 
-        r["definitely not mining"] = result["definitely_not_mining"]
-        r["mining_confidence"] = round(result["confidence"], 3)
+    with ThreadPoolExecutor(max_workers=LLM_MAX_WORKERS) as ex:
+        futures = [ex.submit(classify_one, (i, r)) for i, r in enumerate(rows)]
 
-        if i % 25 == 0 or i == total_rows:
-            elapsed = time.time() - start_time
-            sec_per_row = elapsed / i
-            rows_remaining = total_rows - i
-            eta_seconds = rows_remaining * sec_per_row
+        completed = 0
+        pbar = tqdm(total=total_rows, desc="definitely-not-mining filter")
 
-            pbar.set_postfix({
-                "elapsed": format_eta(elapsed),
-                "eta": format_eta(eta_seconds),
-                "s/row": f"{sec_per_row:.2f}",
-            })
+        for fut in as_completed(futures):
+            idx, result = fut.result()
+
+            rows[idx]["definitely not mining"] = result["definitely_not_mining"]
+            rows[idx]["mining_confidence"] = round(result["confidence"], 3)
+
+            completed += 1
+            pbar.update(1)
+
+            if completed % 25 == 0 or completed == total_rows:
+                elapsed = time.time() - start_time
+                sec_per_row = elapsed / completed
+                rows_remaining = total_rows - completed
+                eta_seconds = rows_remaining * sec_per_row
+
+                pbar.set_postfix({
+                    "elapsed": format_eta(elapsed),
+                    "eta": format_eta(eta_seconds),
+                    "s/row": f"{sec_per_row:.2f}",
+                })
+
+        pbar.close()
 
     out_df = pd.DataFrame(rows)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False, encoding="utf-8")
 
     total_elapsed = time.time() - start_time
@@ -214,7 +235,6 @@ def run_filter(
     print("Rows flagged for removal:",
           int(out_df["definitely not mining"].sum()))
     print(f"First-classifier total time: {format_eta(total_elapsed)}")
-
 
 
 def keep_remaining(
@@ -231,7 +251,10 @@ def keep_remaining(
     # Ensure fetch_error is treated as string
     df["fetch_error"] = df.get("fetch_error", "").fillna("").astype(str)
 
-    filtered_df = df[(df["definitely not mining"] == False) | (df["fetch_error"].str.strip() != "")]
+    filtered_df = df[
+        (df["definitely not mining"] == False) |
+        (df["fetch_error"].str.strip() != "")
+    ]
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
     filtered_df.to_csv(out_path, index=False)
@@ -255,9 +278,11 @@ if __name__ == "__main__":
     ap.add_argument("--remaining-out", dest="remaining_out", default=None)
     args = ap.parse_args()
 
-    out = run_filter(in_path=Path(args.in_path), out_path=Path(args.out_path), model=args.model, max_rows=args.max_rows)
+    run_filter(
+        in_path=Path(args.in_path),
+        out_path=Path(args.out_path),
+        model=args.model,
+        max_rows=args.max_rows,
+    )
     if args.remaining_out:
         keep_remaining(Path(args.out_path), Path(args.remaining_out))
-
-
-## If title, description are empty or missing, it outputs FALSE and confidence is 0.0s
