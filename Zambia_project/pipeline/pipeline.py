@@ -524,31 +524,30 @@ def combine_daily_exports(daily_paths: List[Path], out_path: Path) -> Path:
 
     out_path.parent.mkdir(parents=True, exist_ok=True)
 
-    first_file = True
     total_rows = 0
+    header_written = False
     n_cols = None
 
-    for i, p in enumerate(daily_paths, start=1):
-        print(f"[combine] Reading {i}/{len(daily_paths)}: {p.name}")
+    with open(out_path, "w", encoding="utf-8", newline="") as f_out:
+        for i, p in enumerate(daily_paths, start=1):
+            print(f"[combine] Appending {i}/{len(daily_paths)}: {p.name}")
 
-        df = pd.read_csv(p, low_memory=False)
-        total_rows += len(df)
+            with open(p, "r", encoding="utf-8", newline="") as f_in:
+                header = f_in.readline()
+                if not header:
+                    continue
 
-        if n_cols is None:
-            n_cols = df.shape[1]
+                if not header_written:
+                    f_out.write(header)
+                    header_written = True
+                    n_cols = len(header.rstrip("\n").split(","))
 
-        df.to_csv(
-            out_path,
-            mode="w" if first_file else "a",
-            header=first_file,
-            index=False,
-            encoding="utf-8",
-        )
+                row_count_this_file = 0
+                for line in f_in:
+                    f_out.write(line)
+                    row_count_this_file += 1
 
-        first_file = False
-
-        del df
-        gc.collect()
+                total_rows += row_count_this_file
 
     print(f"Saved: {out_path}  (rows={total_rows:,}, cols={n_cols})")
     return out_path
