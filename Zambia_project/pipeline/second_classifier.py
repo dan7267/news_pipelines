@@ -44,7 +44,7 @@ _MONTHS = (
     "January|February|March|April|May|June|July|August|September|October|November|December"
 )
 
-LLM_MAX_WORKERS = 4
+LLM_MAX_WORKERS = 8
 
 
 def fallback_date_from_url(url: str) -> str:

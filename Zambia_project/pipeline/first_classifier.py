@@ -30,7 +30,7 @@ OUT_PATH = IN_PATH.with_name(
 )
 
 DEFAULT_MODEL = "gpt-5-mini"
-LLM_MAX_WORKERS = 4
+LLM_MAX_WORKERS = 8
 
 
 # ------------------ OPENAI SETUP ------------------ #
