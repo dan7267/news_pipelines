@@ -558,8 +558,8 @@ class PipelinePaths:
     run_dir: Path
     events_full: Path
     zambia_collapsed: Path
-    enriched: Path
     mining_keyword_filtered: Path
+    enriched: Path
     mining_filtered: Path
     remaining: Path
     final: Path
@@ -572,8 +572,8 @@ def make_paths(run_dir: Path) -> PipelinePaths:
         run_dir=run_dir,
         events_full=run_dir / "01_events_full_combined.csv",
         zambia_collapsed=run_dir / "02_zambia_events_collapsed.csv",
-        enriched=run_dir / "03_zambia_events_enriched.csv",
-        mining_keyword_filtered=run_dir / "04_mining_keyword_filtered.csv",
+        mining_keyword_filtered=run_dir / "03_mining_keyword_filtered.csv",
+        enriched=run_dir / "04_zambia_events_enriched.csv",
         mining_filtered=run_dir / "05_mining_filtered.csv",
         remaining=run_dir / "06_remaining.csv",
         final=run_dir / "07_second_classifier_final.csv",
@@ -645,28 +645,33 @@ def main() -> None:
     run_analyse_raw(paths.events_full, paths.zambia_collapsed)
     print(f"Saved: {paths.zambia_collapsed}")
 
-    # 3) fetch_metadata
-    print("\n[fetch_metadata] enriching with title/description")
-    enrich_file(paths.zambia_collapsed, paths.enriched)
-    print(f"Saved: {paths.enriched}")
-    if args.stop_after_enrich:
-        print("[pipeline] stopping after enrichment as requested")
-        return
-    # 4) first_classifier
     model = args.model  # None => each module default, but we keep your explicit default below
 
     print("\n[mining_matcher] scrape + keyword mining filter")
     run_mining_matcher(
-        in_path=paths.enriched,
+        in_path=paths.zambia_collapsed,
         out_path=paths.mining_keyword_filtered,
         scrape_cache_path=paths.scrape_cache,
         max_rows=args.max_rows,
     )
     print(f"Saved: {paths.mining_keyword_filtered}")
 
+
+
+    # 3) fetch_metadata
+    print("\n[fetch_metadata] enriching with title/description")
+    enrich_file(paths.mining_keyword_filtered, paths.enriched)
+    print(f"Saved: {paths.enriched}")
+    if args.stop_after_enrich:
+        print("[pipeline] stopping after enrichment as requested")
+        return
+    
+
+
+
     print("\n[first_classifier] definitely-not-mining filter")
     run_filter(
-        in_path=paths.mining_keyword_filtered,
+        in_path=paths.enriched,
         out_path=paths.mining_filtered,
         model=model or "gpt-5-mini",
         max_rows=args.max_rows,
@@ -695,7 +700,7 @@ def main() -> None:
 
     # Define numbered output paths (must match your pipeline filenames exactly)
     step1_csv = run_dir / "01_events_full_combined.csv"
-    step3_csv = run_dir / "03_zambia_events_enriched.csv"
+    step3_csv = run_dir / "03_mining_keyword_filtered.csv"
     step4_csv = run_dir / "05_mining_filtered.csv"
     step5_csv = run_dir / "06_remaining.csv"
     step6_csv = run_dir / "07_second_classifier_final.csv"

@@ -92,7 +92,7 @@ def _norm_str(v: Any) -> str:
     return str(v).strip()
 
 
-def mining_match_score(title: str, description: str, text: str) -> int:
+def matched_mining_patterns(title: str, description: str, text: str) -> list[str]:
     haystack = " ".join([
         _norm_str(title),
         _norm_str(description),
@@ -100,13 +100,13 @@ def mining_match_score(title: str, description: str, text: str) -> int:
     ])
 
     if not haystack.strip():
-        return 0
+        return []
 
-    score = 0
+    matches = []
     for pat in COMPILED_PATTERNS:
         if pat.search(haystack):
-            score += 1
-    return score
+            matches.append(pat.pattern)
+    return matches
 
 
 def run_mining_matcher(
@@ -162,21 +162,41 @@ def run_mining_matcher(
     save_scrape_cache(scrape_cache_path, scrape_cache)
 
     keep_rows = []
+
     for r, sc in zip(rows, scraped):
         title = _norm_str(r.get("title"))
         description = _norm_str(r.get("description"))
         text = _norm_str(sc.get("text"))
 
-        score = mining_match_score(title, description, text)
+        matches = matched_mining_patterns(title, description, text)
+        score = len(matches)
+        scrape_failed = not bool(sc.get("scrape_ok", False))
+
         r["scrape_status"] = sc.get("scrape_status", "")
         r["scraped_title"] = sc.get("scraped_title", "")
         r["scraped_published_date"] = sc.get("scraped_published_date", "unknown")
-        r["mining_keyword_score"] = score
-        r["mining_keyword_match"] = score >= MIN_MATCH_SCORE
 
-        # conservative:
-        # keep rows if they match keywords OR scrape failed
-        if r["mining_keyword_match"] or str(r["scrape_status"]).strip() != "ok":
+        r["mining_keyword_score"] = score
+        r["mining_keyword_match"] = (score >= MIN_MATCH_SCORE) or scrape_failed
+        r["mining_keyword_force_keep"] = scrape_failed
+        r["mining_keyword_match_detail"] = matches[0] if score == 1 else ""
+        r["mining_keyword_matches"] = " || ".join(matches)
+
+        if scrape_failed:
+            r["mining_keyword_decision_reason"] = "scrape_failed_force_keep"
+        elif score >= MIN_MATCH_SCORE:
+            r["mining_keyword_decision_reason"] = "keyword_match"
+        else:
+            r["mining_keyword_decision_reason"] = "filtered_out"
+
+        if score == 1:
+            print(
+                f"[score=1] {r.get('sourceurl', '')} | "
+                f"matched={r['mining_keyword_match_detail']} | "
+                f"scrape_status={r['scrape_status']}"
+            )
+
+        if r["mining_keyword_match"]:
             keep_rows.append(r)
 
     out_df = pd.DataFrame(keep_rows)
