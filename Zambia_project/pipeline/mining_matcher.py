@@ -109,6 +109,16 @@ def run_mining_matcher(
     text = _build_text_series(df)
     nonempty_mask = text.ne("")
 
+    print(f"[diagnostic] total rows: {len(df):,}")
+    print(f"[diagnostic] non-empty combined text rows: {int(nonempty_mask.sum()):,}")
+
+    for col in ["title", "description", "text"]:
+        if col in df.columns:
+            nonempty = (df[col].fillna("").astype(str).str.strip() != "").sum()
+            print(f"[diagnostic] {col}: {nonempty:,} non-empty")
+        else:
+            print(f"[diagnostic] {col}: MISSING")
+
     df["mining_keyword_score"] = pd.Series(0, index=df.index, dtype="int8")
     if nonempty_mask.any():
         df.loc[nonempty_mask, "mining_keyword_score"] = (
@@ -116,12 +126,16 @@ def run_mining_matcher(
             .str.contains(COMPILED_MINING_REGEX, na=False)
             .astype("int8")
         )
+    print(f"[diagnostic] keyword matches: {int((df['mining_keyword_score'] >= MIN_MATCH_SCORE).sum()):,}")    
 
-    df["mining_keyword_match"] = (df["mining_keyword_score"] >= MIN_MATCH_SCORE)
-    df["mining_keyword_force_keep"] = False
-    df["mining_keyword_decision_reason"] = df["mining_keyword_match"].map(
-        {True: "keyword_match", False: "filtered_out"}
+    df["mining_keyword_match"] = (
+        (df["mining_keyword_score"] >= MIN_MATCH_SCORE) | (~nonempty_mask)
     )
+    df["mining_keyword_force_keep"] = ~nonempty_mask
+
+    df["mining_keyword_decision_reason"] = "filtered_out"
+    df.loc[df["mining_keyword_score"] >= MIN_MATCH_SCORE, "mining_keyword_decision_reason"] = "keyword_match"
+    df.loc[~nonempty_mask, "mining_keyword_decision_reason"] = "empty_text_force_keep"
 
     # Preserve downstream compatibility where these columns may be expected,
     # but keep them blank so we avoid expensive per-row match-detail extraction.
