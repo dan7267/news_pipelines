@@ -28,6 +28,7 @@ import re
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
 from urllib.parse import urlparse
+from concurrent.futures import ThreadPoolExecutor, as_completed
 
 # Try to import Newspaper3k as an optional fallback extractor
 try:
@@ -42,6 +43,8 @@ except Exception:
 _MONTHS = (
     "January|February|March|April|May|June|July|August|September|October|November|December"
 )
+
+LLM_MAX_WORKERS = 4
 
 
 def fallback_date_from_url(url: str) -> str:
@@ -643,12 +646,17 @@ def run_stage2(
     save_scrape_cache(scrape_cache_path, scrape_cache)
 
     # --- LLM ---
-    for r, sc in tqdm(list(zip(rows, scraped)), total=len(rows), desc="LLM classify"):
+    llm_jobs = []
+    total_rows = len(rows)
+
+    # First: attach scrape fields and handle non-LLM rows immediately
+    for idx, (r, sc) in enumerate(zip(rows, scraped)):
         r["scrape_status"] = sc.get("scrape_status", "")
         r["scraped_title"] = sc.get("scraped_title", "")
         r["scraped_published_date"] = sc.get("scraped_published_date", "unknown")
 
         text = sc.get("text", "")
+
         if not sc.get("scrape_ok", False) or len((text or "").strip()) < MIN_TEXT_CHARS:
             # Conservative: no scrape -> not mining
             r["mining_related"] = False
@@ -660,13 +668,17 @@ def run_stage2(
             r["impact_evidence"] = ""
             r["in_zambia"] = False
             r["in_zambia_confidence"] = 0.0
-
-            # NEW entity fields
             r["mineral_type"] = ""
             r["region"] = ""
             r["mine_name"] = ""
             r["mining_company"] = ""
-            continue
+        else:
+            llm_jobs.append((idx, r, sc, text))
+
+    print(f"Rows eligible for LLM: {len(llm_jobs):,}")
+
+    def run_one_llm_job(job):
+        idx, r, sc, text = job
 
         result = llm_stage2(
             client=client,
@@ -676,76 +688,80 @@ def run_stage2(
             article_text=text,
             model=model,
         )
+        return idx, result
 
-        r["mining_related"] = bool(result.get("mining_related", False))
-        r["mining_related_confidence"] = round(float(result.get("mining_related_confidence", 0.0)), 3)
-        r["in_zambia"] = bool(result.get("in_zambia", False))
-        r["in_zambia_confidence"] = round(float(result.get("in_zambia_confidence", 0.0)), 3)
-        gate_ok = bool(r["in_zambia"]) and bool(r["mining_related"])
-        r["impact_confidence"] = round(float(result.get("impact_confidence", 0.0)), 3) if gate_ok else 0.0
-        # --- NEW ENTITY EXTRACTION ---
-        r["mineral_type"] = _norm_str(result.get("mineral_type"))
-        r["region"] = _norm_str(result.get("region"))
-        r["mine_name"] = _norm_str(result.get("mine_name"))
-        r["mining_company"] = _norm_str(result.get("mining_company"))
+    with ThreadPoolExecutor(max_workers=LLM_MAX_WORKERS) as ex:
+        futures = [ex.submit(run_one_llm_job, job) for job in llm_jobs]
 
-        impacts = result.get("impacts", [])
-        if gate_ok and isinstance(impacts, list) and impacts:
-            l1s, l2s, l3s = [], [], []
-            for it in impacts:
-                if not isinstance(it, dict):
-                    continue
-                l1s.append(_norm_str(it.get("level1")))
-                l2s.append(_norm_str(it.get("level2")))
-                l3s.append(_norm_str(it.get("level3")))
-            r["impact_level1"] = " || ".join([x for x in l1s if x])
-            r["impact_level2"] = " || ".join([x for x in l2s if x])
-            r["impact_level3"] = " || ".join([x for x in l3s if x])
-        else:
-            r["impact_level1"] = ""
-            r["impact_level2"] = ""
-            r["impact_level3"] = ""
+        for fut in tqdm(as_completed(futures), total=len(futures), desc="LLM classify"):
+            idx, result = fut.result()
+            r = rows[idx]
 
-        # Build readable CSV-safe evidence string linked to each impact
-        ev_items = result.get("impact_evidence", [])
-        flat_parts = []
+            r["mining_related"] = bool(result.get("mining_related", False))
+            r["mining_related_confidence"] = round(float(result.get("mining_related_confidence", 0.0)), 3)
+            r["in_zambia"] = bool(result.get("in_zambia", False))
+            r["in_zambia_confidence"] = round(float(result.get("in_zambia_confidence", 0.0)), 3)
 
-        if gate_ok:
-            if isinstance(ev_items, str):
-                ev_items = [ev_items]
+            gate_ok = bool(r["in_zambia"]) and bool(r["mining_related"])
+            r["impact_confidence"] = round(float(result.get("impact_confidence", 0.0)), 3) if gate_ok else 0.0
 
-            if isinstance(ev_items, list):
-                for item in ev_items:
-                    # Case 1: plain string evidence with no structure
-                    if isinstance(item, str):
-                        s = _norm_str(item)
-                        if s:
-                            flat_parts.append(f"UNLINKED -> “{s}”")
+            r["mineral_type"] = _norm_str(result.get("mineral_type"))
+            r["region"] = _norm_str(result.get("region"))
+            r["mine_name"] = _norm_str(result.get("mine_name"))
+            r["mining_company"] = _norm_str(result.get("mining_company"))
+
+            impacts = result.get("impacts", [])
+            if gate_ok and isinstance(impacts, list) and impacts:
+                l1s, l2s, l3s = [], [], []
+                for it in impacts:
+                    if not isinstance(it, dict):
                         continue
+                    l1s.append(_norm_str(it.get("level1")))
+                    l2s.append(_norm_str(it.get("level2")))
+                    l3s.append(_norm_str(it.get("level3")))
+                r["impact_level1"] = " || ".join([x for x in l1s if x])
+                r["impact_level2"] = " || ".join([x for x in l2s if x])
+                r["impact_level3"] = " || ".join([x for x in l3s if x])
+            else:
+                r["impact_level1"] = ""
+                r["impact_level2"] = ""
+                r["impact_level3"] = ""
 
-                    # Case 2: structured evidence linked to impact
-                    if isinstance(item, dict):
-                        l1 = _norm_str(item.get("level1"))
-                        l2 = _norm_str(item.get("level2"))
-                        l3 = _norm_str(item.get("level3"))
-                        snips = item.get("snippets", [])
+            ev_items = result.get("impact_evidence", [])
+            flat_parts = []
 
-                        if isinstance(snips, str):
-                            snips = [snips]
+            if gate_ok:
+                if isinstance(ev_items, str):
+                    ev_items = [ev_items]
 
-                        cleaned_snips = [f"“{_norm_str(s)}”" for s in snips if _norm_str(s)]
+                if isinstance(ev_items, list):
+                    for item in ev_items:
+                        if isinstance(item, str):
+                            s = _norm_str(item)
+                            if s:
+                                flat_parts.append(f"UNLINKED -> “{s}”")
+                            continue
 
-                        label = " | ".join([x for x in [l1, l2, l3] if x])
+                        if isinstance(item, dict):
+                            l1 = _norm_str(item.get("level1"))
+                            l2 = _norm_str(item.get("level2"))
+                            l3 = _norm_str(item.get("level3"))
+                            snips = item.get("snippets", [])
 
-                        if label and cleaned_snips:
-                            flat_parts.append(f"{label} -> {' | '.join(cleaned_snips)}")
-                        elif label:
-                            flat_parts.append(f"{label} ->")
-                        elif cleaned_snips:
-                            flat_parts.append(f"UNLINKED -> {' | '.join(cleaned_snips)}")
+                            if isinstance(snips, str):
+                                snips = [snips]
 
-        # Final readable CSV string
-        r["impact_evidence"] = " || ".join(flat_parts)
+                            cleaned_snips = [f"“{_norm_str(s)}”" for s in snips if _norm_str(s)]
+                            label = " | ".join([x for x in [l1, l2, l3] if x])
+
+                            if label and cleaned_snips:
+                                flat_parts.append(f"{label} -> {' | '.join(cleaned_snips)}")
+                            elif label:
+                                flat_parts.append(f"{label} ->")
+                            elif cleaned_snips:
+                                flat_parts.append(f"UNLINKED -> {' | '.join(cleaned_snips)}")
+
+            r["impact_evidence"] = " || ".join(flat_parts)
 
     out_df = pd.DataFrame(rows)
     out_path.parent.mkdir(parents=True, exist_ok=True)
