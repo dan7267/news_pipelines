@@ -30,6 +30,7 @@ from analyse_raw import run_analyse_raw
 from fetch_metadata import enrich_file
 from first_classifier import run_filter, keep_remaining
 from second_classifier import run_stage2
+from mining_matcher import run_mining_matcher
 
 
 
@@ -559,9 +560,11 @@ class PipelinePaths:
     events_full: Path
     zambia_collapsed: Path
     enriched: Path
+    mining_keyword_filtered: Path
     mining_filtered: Path
     remaining: Path
     final: Path
+    scrape_cache: Path
 
 
 def make_paths(run_dir: Path) -> PipelinePaths:
@@ -571,9 +574,11 @@ def make_paths(run_dir: Path) -> PipelinePaths:
         events_full=run_dir / "01_events_full_combined.csv",
         zambia_collapsed=run_dir / "02_zambia_events_collapsed.csv",
         enriched=run_dir / "03_zambia_events_enriched.csv",
-        mining_filtered=run_dir / "04_mining_filtered.csv",
-        remaining=run_dir / "05_remaining.csv",
-        final=run_dir / "06_second_classifier_final.csv",
+        mining_keyword_filtered=run_dir / "04_mining_keyword_filtered.csv",
+        mining_filtered=run_dir / "05_mining_filtered.csv",
+        remaining=run_dir / "06_remaining.csv",
+        final=run_dir / "07_second_classifier_final.csv",
+        scrape_cache=run_dir / "07_second_classifier_final_scrape_cache.csv",
     )
 
 
@@ -651,14 +656,23 @@ def main() -> None:
     # 4) first_classifier
     model = args.model  # None => each module default, but we keep your explicit default below
 
+    print("\n[mining_matcher] scrape + keyword mining filter")
+    run_mining_matcher(
+        in_path=paths.enriched,
+        out_path=paths.mining_keyword_filtered,
+        scrape_cache_path=paths.scrape_cache,
+        max_rows=args.max_rows,
+    )
+    print(f"Saved: {paths.mining_keyword_filtered}")
+
     print("\n[first_classifier] definitely-not-mining filter")
     run_filter(
-        in_path=paths.enriched,
+        in_path=paths.mining_keyword_filtered,
         out_path=paths.mining_filtered,
-        # model=model or "gpt-5-nano-2025-08-07",
         model=model or "gpt-5-mini",
         max_rows=args.max_rows,
     )
+    print(f"Saved: {paths.mining_filtered}")
     print(f"Saved: {paths.mining_filtered}")
 
     print("\n[first_classifier] keeping remaining rows")
@@ -673,7 +687,7 @@ def main() -> None:
         # model=model or "gpt-5-nano-2025-08-07",
         model = model or "gpt-5-mini",
         max_rows=args.max_rows,
-        scrape_cache_path=paths.final.with_name(paths.final.stem + "_scrape_cache.csv"),
+        scrape_cache_path=paths.scrape_cache,
     )
     print(f"Saved: {paths.final}")
 
@@ -683,9 +697,9 @@ def main() -> None:
     # Define numbered output paths (must match your pipeline filenames exactly)
     step1_csv = run_dir / "01_events_full_combined.csv"
     step3_csv = run_dir / "03_zambia_events_enriched.csv"
-    step4_csv = run_dir / "04_mining_filtered.csv"
-    step5_csv = run_dir / "05_remaining.csv"
-    step6_csv = run_dir / "06_second_classifier_final.csv"
+    step4_csv = run_dir / "05_mining_filtered.csv"
+    step5_csv = run_dir / "06_remaining.csv"
+    step6_csv = run_dir / "07_second_classifier_final.csv"
 
     compute_and_write_run_stats(
         run_dir=run_dir,
