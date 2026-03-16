@@ -1,0 +1,167 @@
+from __future__ import annotations
+
+import csv
+import re
+from concurrent.futures import ThreadPoolExecutor
+from pathlib import Path
+from typing import Any, Dict, Optional
+
+import pandas as pd
+from tqdm import tqdm
+
+# reuse stage2 scrape helpers
+from second_classifier import (
+    load_scrape_cache,
+    save_scrape_cache,
+    scrape_one,
+    normalize_url_basic,
+)
+
+MAX_WORKERS = 10
+MIN_MATCH_SCORE = 1
+
+MINING_PATTERNS = [
+    r"\bmine\b",
+    r"\bmines\b",
+    r"\bmining\b",
+    r"\bminer\b",
+    r"\bmineral\b",
+    r"\bminerals\b",
+    r"\bore\b",
+    r"\bsmelter\b",
+    r"\bsmelting\b",
+    r"\btailings?\b",
+    r"\bopen[- ]?pit\b",
+    r"\bshaft\b",
+    r"\bdrill(?:ing)?\b",
+    r"\bexploration\b",
+    r"\broyalt(?:y|ies)\b",
+    r"\blicen[cs]e\b",
+    r"\bpermit\b",
+    r"\bcopper\b",
+    r"\bcobalt\b",
+    r"\bgold\b",
+    r"\bnickel\b",
+    r"\blithium\b",
+    r"\bmanganese\b",
+    r"\bcoal\b",
+    r"\buranium\b",
+    r"\brare earth(?:s)?\b",
+    r"\bconcentrator\b",
+    r"\brefiner(?:y)?\b",
+    r"\bKonkola\b",
+    r"\bKCM\b",
+    r"\bMopani\b",
+    r"\bKansanshi\b",
+    r"\bLumwana\b",
+    r"\bFirst Quantum\b",
+    r"\bBarrick\b",
+    r"\bVedanta\b",
+    r"\bZCCM[- ]?IH\b",
+]
+
+COMPILED_PATTERNS = [re.compile(p, flags=re.IGNORECASE) for p in MINING_PATTERNS]
+
+
+def _norm_str(v: Any) -> str:
+    if v is None:
+        return ""
+    return str(v).strip()
+
+
+def mining_match_score(title: str, description: str, text: str) -> int:
+    haystack = " ".join([
+        _norm_str(title),
+        _norm_str(description),
+        _norm_str(text),
+    ])
+
+    if not haystack.strip():
+        return 0
+
+    score = 0
+    for pat in COMPILED_PATTERNS:
+        if pat.search(haystack):
+            score += 1
+    return score
+
+
+def run_mining_matcher(
+    in_path: Path,
+    out_path: Path,
+    scrape_cache_path: Path,
+    max_rows: Optional[int] = None,
+) -> Path:
+    if not in_path.exists():
+        raise FileNotFoundError(f"Input not found: {in_path}")
+
+    df = pd.read_csv(in_path)
+    if max_rows:
+        df = df.head(max_rows).copy()
+
+    if "sourceurl" not in df.columns:
+        raise ValueError("Expected sourceurl column.")
+
+    scrape_cache = load_scrape_cache(scrape_cache_path)
+    rows = df.to_dict(orient="records")
+
+    def scrape_cached(url: str) -> Dict[str, Any]:
+        key = normalize_url_basic(url)
+
+        if key in scrape_cache:
+            cached = scrape_cache[key]
+            return {
+                "url_normalized": key,
+                "final_url": cached.get("final_url", url),
+                "scrape_ok": str(cached.get("scrape_ok", "")).lower() in {"true", "1", "yes"},
+                "scrape_status": cached.get("scrape_status", ""),
+                "scraped_title": cached.get("scraped_title", ""),
+                "scraped_published_date": cached.get("scraped_published_date", "unknown"),
+                "text": cached.get("text", ""),
+            }
+
+        out = scrape_one(url)
+        scrape_cache[key] = {
+            "url_normalized": out["url_normalized"],
+            "final_url": out.get("final_url", url),
+            "scrape_ok": str(out.get("scrape_ok", False)),
+            "scrape_status": out.get("scrape_status", ""),
+            "scraped_title": out.get("scraped_title", ""),
+            "scraped_published_date": out.get("scraped_published_date", "unknown"),
+            "text": out.get("text", ""),
+        }
+        return out
+
+    urls = [_norm_str(r.get("sourceurl")) for r in rows]
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        scraped = list(tqdm(ex.map(scrape_cached, urls), total=len(urls), desc="Scraping for mining matcher"))
+
+    save_scrape_cache(scrape_cache_path, scrape_cache)
+
+    keep_rows = []
+    for r, sc in zip(rows, scraped):
+        title = _norm_str(r.get("title"))
+        description = _norm_str(r.get("description"))
+        text = _norm_str(sc.get("text"))
+
+        score = mining_match_score(title, description, text)
+        r["scrape_status"] = sc.get("scrape_status", "")
+        r["scraped_title"] = sc.get("scraped_title", "")
+        r["scraped_published_date"] = sc.get("scraped_published_date", "unknown")
+        r["mining_keyword_score"] = score
+        r["mining_keyword_match"] = score >= MIN_MATCH_SCORE
+
+        # conservative:
+        # keep rows if they match keywords OR scrape failed
+        if r["mining_keyword_match"] or str(r["scrape_status"]).strip() != "ok":
+            keep_rows.append(r)
+
+    out_df = pd.DataFrame(keep_rows)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
+    out_df.to_csv(out_path, index=False, encoding="utf-8")
+
+    print(f"Saved: {out_path}")
+    print(f"Input rows: {len(df):,}")
+    print(f"Rows kept after mining matcher: {len(out_df):,}")
+
+    return out_path
