@@ -1,23 +1,11 @@
 from __future__ import annotations
 
-import csv
 import re
-from concurrent.futures import ThreadPoolExecutor
 from pathlib import Path
-from typing import Any, Dict, Optional
+from typing import Any, Optional
 
 import pandas as pd
-from tqdm import tqdm
 
-# reuse stage2 scrape helpers
-from second_classifier import (
-    load_scrape_cache,
-    save_scrape_cache,
-    scrape_one,
-    normalize_url_basic,
-)
-
-MAX_WORKERS = 10
 MIN_MATCH_SCORE = 1
 
 MINING_PATTERNS = [
@@ -37,7 +25,6 @@ MINING_PATTERNS = [
     r"\bopen[- ]?pit\b",
     r"\bshaft\b",
     r"\bdrill(?:ing)?\b",
-    # r"\bexploration\b",
     r"\broyalt(?:y|ies)\b",
     r"\blicen[cs]e\b",
     r"\bpermit\b",
@@ -63,27 +50,19 @@ MINING_PATTERNS = [
     r"\bVedanta\b",
     r"\bZCCM[- ]?IH\b",
     r"\bquarry\b",
-    # r"\bcritical\b",
     r"\bextract\b",
     r"\bextraction\b",
     r"\brare\b",
-    # r"\bearth\b",
     r"\brare-earth\b",
-    # r"\belement\b",
     r"\belements\b",
     r"\bcopperbelt\b",
-    # r"\bkitwe\b",
-    # r"\bluanshya\b",
-    # r"\bmufulira\b",
-    # r"\bchingola\b",
     r"\bmetal\b",
     r"\bmetals\b",
-    # r"\blead\b",
     r"\bmineworker\b",
     r"\bmineworkers\b",
 ]
 
-COMPILED_PATTERNS = [re.compile(p, flags=re.IGNORECASE) for p in MINING_PATTERNS]
+COMPILED_MINING_REGEX = re.compile("|".join(MINING_PATTERNS), flags=re.IGNORECASE)
 
 
 def _norm_str(v: Any) -> str:
@@ -92,21 +71,19 @@ def _norm_str(v: Any) -> str:
     return str(v).strip()
 
 
-def matched_mining_patterns(title: str, description: str, text: str) -> list[str]:
-    haystack = " ".join([
-        _norm_str(title),
-        _norm_str(description),
-        _norm_str(text),
-    ])
+def _build_text_series(df: pd.DataFrame) -> pd.Series:
+    parts = []
+    for col in ["title", "description", "text"]:
+        if col in df.columns:
+            parts.append(df[col].fillna("").astype(str))
 
-    if not haystack.strip():
-        return []
+    if not parts:
+        return pd.Series([""] * len(df), index=df.index, dtype="object")
 
-    matches = []
-    for pat in COMPILED_PATTERNS:
-        if pat.search(haystack):
-            matches.append(pat.pattern)
-    return matches
+    text = parts[0]
+    for part in parts[1:]:
+        text = text + " " + part
+    return text.str.strip()
 
 
 def run_mining_matcher(
@@ -125,81 +102,40 @@ def run_mining_matcher(
     if "sourceurl" not in df.columns:
         raise ValueError("Expected sourceurl column.")
 
-    scrape_cache = load_scrape_cache(scrape_cache_path)
-    rows = df.to_dict(orient="records")
+    # Keep signature-compatible with existing pipeline, but the matcher no longer
+    # scrapes or uses the scrape cache because that was a major bottleneck.
+    _ = scrape_cache_path
 
-    def scrape_cached(url: str) -> Dict[str, Any]:
-        key = normalize_url_basic(url)
+    text = _build_text_series(df)
+    nonempty_mask = text.ne("")
 
-        if key in scrape_cache:
-            cached = scrape_cache[key]
-            return {
-                "url_normalized": key,
-                "final_url": cached.get("final_url", url),
-                "scrape_ok": str(cached.get("scrape_ok", "")).lower() in {"true", "1", "yes"},
-                "scrape_status": cached.get("scrape_status", ""),
-                "scraped_title": cached.get("scraped_title", ""),
-                "scraped_published_date": cached.get("scraped_published_date", "unknown"),
-                "text": cached.get("text", ""),
-            }
+    df["mining_keyword_score"] = pd.Series(0, index=df.index, dtype="int8")
+    if nonempty_mask.any():
+        df.loc[nonempty_mask, "mining_keyword_score"] = (
+            text.loc[nonempty_mask]
+            .str.contains(COMPILED_MINING_REGEX, na=False)
+            .astype("int8")
+        )
 
-        out = scrape_one(url)
-        scrape_cache[key] = {
-            "url_normalized": out["url_normalized"],
-            "final_url": out.get("final_url", url),
-            "scrape_ok": str(out.get("scrape_ok", False)),
-            "scrape_status": out.get("scrape_status", ""),
-            "scraped_title": out.get("scraped_title", ""),
-            "scraped_published_date": out.get("scraped_published_date", "unknown"),
-            "text": out.get("text", ""),
-        }
-        return out
+    df["mining_keyword_match"] = (df["mining_keyword_score"] >= MIN_MATCH_SCORE)
+    df["mining_keyword_force_keep"] = False
+    df["mining_keyword_decision_reason"] = df["mining_keyword_match"].map(
+        {True: "keyword_match", False: "filtered_out"}
+    )
 
-    urls = [_norm_str(r.get("sourceurl")) for r in rows]
-    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-        scraped = list(tqdm(ex.map(scrape_cached, urls), total=len(urls), desc="Scraping for mining matcher"))
+    # Preserve downstream compatibility where these columns may be expected,
+    # but keep them blank so we avoid expensive per-row match-detail extraction.
+    for col in [
+        "scrape_status",
+        "scraped_title",
+        "scraped_published_date",
+        "mining_keyword_match_detail",
+        "mining_keyword_matches",
+    ]:
+        if col not in df.columns:
+            df[col] = ""
 
-    save_scrape_cache(scrape_cache_path, scrape_cache)
-
-    keep_rows = []
-
-    for r, sc in zip(rows, scraped):
-        title = _norm_str(r.get("title"))
-        description = _norm_str(r.get("description"))
-        text = _norm_str(sc.get("text"))
-
-        matches = matched_mining_patterns(title, description, text)
-        score = len(matches)
-        scrape_failed = not bool(sc.get("scrape_ok", False))
-
-        r["scrape_status"] = sc.get("scrape_status", "")
-        r["scraped_title"] = sc.get("scraped_title", "")
-        r["scraped_published_date"] = sc.get("scraped_published_date", "unknown")
-
-        r["mining_keyword_score"] = score
-        r["mining_keyword_match"] = (score >= MIN_MATCH_SCORE) or scrape_failed
-        r["mining_keyword_force_keep"] = scrape_failed
-        r["mining_keyword_match_detail"] = matches[0] if score == 1 else ""
-        r["mining_keyword_matches"] = " || ".join(matches)
-
-        if scrape_failed:
-            r["mining_keyword_decision_reason"] = "scrape_failed_force_keep"
-        elif score >= MIN_MATCH_SCORE:
-            r["mining_keyword_decision_reason"] = "keyword_match"
-        else:
-            r["mining_keyword_decision_reason"] = "filtered_out"
-
-        if score == 1:
-            print(
-                f"[score=1] {r.get('sourceurl', '')} | "
-                f"matched={r['mining_keyword_match_detail']} | "
-                f"scrape_status={r['scrape_status']}"
-            )
-
-        if r["mining_keyword_match"]:
-            keep_rows.append(r)
-
-    out_df = pd.DataFrame(keep_rows)
+    out_df = df.loc[df["mining_keyword_match"]].copy()
     out_path.parent.mkdir(parents=True, exist_ok=True)
     out_df.to_csv(out_path, index=False, encoding="utf-8")
 
@@ -208,3 +144,21 @@ def run_mining_matcher(
     print(f"Rows kept after mining matcher: {len(out_df):,}")
 
     return out_path
+
+
+if __name__ == "__main__":
+    import argparse
+
+    ap = argparse.ArgumentParser()
+    ap.add_argument("--input", required=True)
+    ap.add_argument("--output", required=True)
+    ap.add_argument("--scrape-cache", required=True)
+    ap.add_argument("--max-rows", type=int, default=None)
+    args = ap.parse_args()
+
+    run_mining_matcher(
+        in_path=Path(args.input),
+        out_path=Path(args.output),
+        scrape_cache_path=Path(args.scrape_cache),
+        max_rows=args.max_rows,
+    )

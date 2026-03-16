@@ -1,11 +1,14 @@
-import re
-import io
 import csv
+import io
+import re
 import zipfile
-import requests
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple
+from tempfile import NamedTemporaryFile
+from typing import Iterator, List, Optional, Tuple
+
+import requests
 
 MASTER = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
 TARGET_SUFFIX = ".export.CSV.zip"
@@ -18,6 +21,11 @@ OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 STATE_DIR = PROJECT_ROOT / "data" / "interim" / "_state" / "gdelt"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
+
+# Conservative worker count to avoid memory / bandwidth spikes.
+MAX_WORKERS = 4
+CHUNK_SIZE = 1024 * 1024
+TIMEOUT = (15, 120)
 
 # --- Full GDELT Events export schema (standard order) ---
 # We add ingest_time as an extra column at the front.
@@ -108,11 +116,13 @@ TEXT_TERMS = [
 
 EVENT_INDEX = {name: i for i, name in enumerate(EVENT_FIELDS)}
 
+
 def _field(row: List[str], name: str) -> str:
     idx = EVENT_INDEX[name]
     if idx >= len(row):
         return ""
     return (row[idx] or "").strip()
+
 
 def row_is_zambia(row: List[str]) -> bool:
     geo_country_cols = ["actiongeo_countrycode", "actor1geo_countrycode", "actor2geo_countrycode"]
@@ -193,11 +203,6 @@ def ensure_header(path: Path) -> None:
 
 
 def pad_or_trim(row: List[str], n: int) -> List[str]:
-    """
-    GDELT exports should match the schema length; this makes the pipeline robust:
-    - if shorter, pad with ""
-    - if longer, trim extras
-    """
     if len(row) < n:
         return row + [""] * (n - len(row))
     if len(row) > n:
@@ -205,16 +210,22 @@ def pad_or_trim(row: List[str], n: int) -> List[str]:
     return row
 
 
-def iter_rows_from_zip(url: str):
+def _stream_zip_to_tempfile(url: str) -> Path:
+    with requests.get(url, stream=True, timeout=TIMEOUT) as r:
+        r.raise_for_status()
+        with NamedTemporaryFile(delete=False, suffix=".zip") as tmp:
+            tmp_path = Path(tmp.name)
+            for chunk in r.iter_content(chunk_size=CHUNK_SIZE):
+                if chunk:
+                    tmp.write(chunk)
+    return tmp_path
+
+
+def iter_rows_from_local_zip(zip_path: Path, url: str) -> Iterator[List[str]]:
     ingest_dt = url_timestamp(url)
     ingest_time = ingest_dt.strftime("%Y%m%d%H%M%S") if ingest_dt else ""
 
-    r = requests.get(url, stream=True, timeout=60)
-    r.raise_for_status()
-
-    buf = io.BytesIO(r.content)
-
-    with zipfile.ZipFile(buf) as zf:
+    with zipfile.ZipFile(zip_path) as zf:
         inner = zf.namelist()[0]
         with zf.open(inner) as f_in:
             reader = csv.reader(
@@ -225,36 +236,51 @@ def iter_rows_from_zip(url: str):
                 if not row:
                     continue
                 row = pad_or_trim(row, len(EVENT_FIELDS))
-
                 if row_is_zambia(row):
                     yield [ingest_time] + row
 
 
+def download_targets(targets: List[Tuple[datetime, str]]) -> dict[datetime, Path]:
+    download_jobs = []
+    for ts, url in targets:
+        marker = processed_marker(ts)
+        if marker.exists():
+            continue
+        download_jobs.append((ts, url))
+
+    downloaded: dict[datetime, Path] = {}
+    if not download_jobs:
+        return downloaded
+
+    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+        future_map = {
+            ex.submit(_stream_zip_to_tempfile, url): (ts, url)
+            for ts, url in download_jobs
+        }
+        for fut in as_completed(future_map):
+            ts, url = future_map[fut]
+            try:
+                downloaded[ts] = fut.result()
+                print(f"Downloaded: {url.split('/')[-1]}", flush=True)
+            except Exception as e:
+                print(f"Failed download: {url} | {e}", flush=True)
+                raise
+
+    return downloaded
+
+
 def main(target_day: str) -> None:
-    """
-    target_day: 'YYYYMMDD' (e.g., '20260224')
-    """
-
-    # print("Starting pipeline...", flush=True)  # DEBUG
-    print(f"Target day: {target_day}", flush=True)  # DEBUG
-
-    print("Downloading GDELT masterfile...", flush=True)  # DEBUG
+    print(f"Target day: {target_day}", flush=True)
+    print("Downloading GDELT masterfile...", flush=True)
     master_txt = requests.get(MASTER, timeout=60).text
-    # print("Masterfile downloaded.", flush=True)  # DEBUG
 
-    # print("Parsing masterfile...", flush=True)  # DEBUG
     rows = parse_masterfile(master_txt)
-    # print(f"Total rows in masterfile: {len(rows)}", flush=True)  # DEBUG
-
     targets: List[Tuple[datetime, str]] = []
 
-    # print("Filtering rows for target date...", flush=True)  # DEBUG
     for _, _, url in rows:
         if not url.endswith(TARGET_SUFFIX):
             continue
-
         ts = url_timestamp(url)
-
         if ts and ts.strftime("%Y%m%d") == target_day:
             targets.append((ts, url))
 
@@ -263,38 +289,32 @@ def main(target_day: str) -> None:
         return
 
     targets.sort()
-
-    # print(f"Found {len(targets)} files for {target_day}.", flush=True)  # DEBUG
-    # print("Beginning processing loop...", flush=True)  # DEBUG
+    downloaded = download_targets(targets)
 
     for ts, url in targets:
-
-        filename = url.split("/")[-1]  # DEBUG
-        # print(f"\n--- Processing file: {filename}", flush=True)  # DEBUG
-
         marker = processed_marker(ts)
-
         if marker.exists():
-            # print(f"Skipping (already done): {filename}", flush=True)
             continue
 
         out_path = daily_output_path(ts)
-
-        # print("Ensuring CSV header exists...", flush=True)  # DEBUG
         ensure_header(out_path)
 
-        with open(out_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            for out_row in iter_rows_from_zip(url):
-                writer.writerow(out_row)
+        zip_path = downloaded.get(ts)
+        if zip_path is None:
+            # Fallback in case a target was not predownloaded for some reason.
+            zip_path = _stream_zip_to_tempfile(url)
 
-        # print("Creating marker file...", flush=True)  # DEBUG
-        marker.touch()
-
-        # print(f"Finished processing {filename}", flush=True)  # DEBUG
-
-    # print("\nAll files processed!", flush=True)  # DEBUG
-    # print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}", flush=True)
+        try:
+            with open(out_path, "a", newline="", encoding="utf-8") as f:
+                writer = csv.writer(f)
+                for out_row in iter_rows_from_local_zip(zip_path, url):
+                    writer.writerow(out_row)
+            marker.touch()
+        finally:
+            try:
+                zip_path.unlink(missing_ok=True)
+            except Exception:
+                pass
 
 
 if __name__ == "__main__":
