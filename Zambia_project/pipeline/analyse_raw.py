@@ -160,7 +160,42 @@ def run_analyse_raw(
 ) -> Path:
     """Load combined events CSV -> filter Zambia -> collapse per-url."""
 
-    df = pd.read_csv(in_path)
+    usecols = [
+        "ingest_time",
+        "globaleventid",
+        "sqldate",
+        "fractiondate",
+        "isrootevent",
+        "numentions",
+        "numsources",
+        "numarticles",
+        "dateadded",
+        "sourceurl",
+        "actiongeo_countrycode",
+        "actor1geo_countrycode",
+        "actor2geo_countrycode",
+        "actiongeo_adm1code",
+        "actor1geo_adm1code",
+        "actor2geo_adm1code",
+        "actiongeo_fullname",
+        "actor1geo_fullname",
+        "actor2geo_fullname",
+        "actor1countrycode",
+        "actor2countrycode",
+        "actor1name",
+        "actor2name",
+    ]
+
+    # only keep columns that actually exist
+    preview = pd.read_csv(in_path, nrows=0)
+    usecols = [c for c in usecols if c in preview.columns]
+
+    df = pd.read_csv(
+        in_path,
+        usecols=usecols,
+        dtype=str,
+        keep_default_na=False,
+    )
 
     df_zambia = filter_zambia(df)
     df_collapsed = collapse_by_sourceurl_store_variants(df_zambia)
