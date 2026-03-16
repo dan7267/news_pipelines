@@ -29,6 +29,19 @@ from tqdm import tqdm
 import csv
 import sys
 
+from itertools import islice
+from typing import Iterable, Iterator, List
+
+BATCH_SIZE = 200
+
+
+def batched_dict_reader(reader: csv.DictReader, batch_size: int) -> Iterator[List[Dict[str, str]]]:
+    while True:
+        batch = list(islice(reader, batch_size))
+        if not batch:
+            break
+        yield batch
+
 
 def set_max_csv_field_size() -> None:
     max_int = sys.maxsize
@@ -48,7 +61,7 @@ HEADERS = {"User-Agent": USER_AGENT, "Accept": "text/html,application/xhtml+xml"
 TIMEOUT_S = 20
 MAX_RETRIES = 2
 SLEEP_BETWEEN_REQ = (0.05, 0.15)
-MAX_WORKERS = 20
+MAX_WORKERS = 16
 
 MAX_TITLE_CHARS = 300
 MAX_DESC_CHARS = 800
@@ -329,57 +342,79 @@ def enrich_file(
     out_path: Path,
     cache_path: Optional[Path] = None,
 ) -> Path:
-    """Read in_path, enrich, write out_path, maintain cache."""
+    """Read in_path, enrich in batches, write out_path, maintain cache."""
     if cache_path is None:
         cache_path = out_path.with_name(out_path.stem + "_url_title_desc_cache.csv")
 
     cache = load_cache(cache_path)
-
-    with open(in_path, "r", newline="", encoding="utf-8") as f_in:
-        rows = list(csv.DictReader(f_in))
-
-    if not rows:
-        out_path.parent.mkdir(parents=True, exist_ok=True)
-        with open(out_path, "w", newline="", encoding="utf-8") as f_out:
-            w = csv.DictWriter(f_out, fieldnames=["sourceurl", "title", "description", "http_status", "fetch_error"])
-            w.writeheader()
-        save_cache(cache_path, cache)
-        print(f"Saved empty output: {out_path}")
-        print(f"Cache: {cache_path}")
-        print("Time: 0.00s  |  Rows: 0")
-        return out_path
-
-    extra_cols = ["title", "description", "http_status", "fetch_error"]
-    fieldnames = list(rows[0].keys())
-    for c in extra_cols:
-        if c not in fieldnames:
-            fieldnames.append(c)
+    out_path.parent.mkdir(parents=True, exist_ok=True)
 
     start = time.time()
+    total_rows = 0
+    wrote_header = False
+    fieldnames = None
 
-    with requests.Session() as session:
-        session.headers.update(HEADERS)
-        with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
-            results = list(
-                tqdm(
-                    ex.map(lambda r: process_row(r, cache, session), rows),
-                    total=len(rows),
-                    desc=f"Enriching {in_path.name}",
+    with open(in_path, "r", newline="", encoding="utf-8") as f_in:
+        reader = csv.DictReader(f_in)
+
+        if reader.fieldnames is None:
+            with open(out_path, "w", newline="", encoding="utf-8") as f_out:
+                w = csv.DictWriter(
+                    f_out,
+                    fieldnames=["sourceurl", "title", "description", "http_status", "fetch_error"],
                 )
+                w.writeheader()
+            save_cache(cache_path, cache)
+            print(f"Saved empty output: {out_path}")
+            print(f"Cache: {cache_path}")
+            print("Time: 0.00s  |  Rows: 0")
+            return out_path
+
+        fieldnames = list(reader.fieldnames)
+        for c in ["title", "description", "http_status", "fetch_error"]:
+            if c not in fieldnames:
+                fieldnames.append(c)
+
+        with open(out_path, "w", newline="", encoding="utf-8") as f_out:
+            w = csv.DictWriter(f_out, fieldnames=fieldnames)
+            w.writeheader()
+            wrote_header = True
+
+            with requests.Session() as session:
+                session.headers.update(HEADERS)
+
+                batch_num = 0
+                for batch in batched_dict_reader(reader, BATCH_SIZE):
+                    batch_num += 1
+                    print(f"[fetch_metadata] batch {batch_num} ({len(batch)} rows)")
+
+                    with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
+                        results = list(
+                            tqdm(
+                                ex.map(lambda r: process_row(r, cache, session), batch),
+                                total=len(batch),
+                                desc=f"Enriching batch {batch_num}",
+                            )
+                        )
+
+                    w.writerows(results)
+                    total_rows += len(results)
+
+                    # persist cache progressively so reruns lose less work
+                    save_cache(cache_path, cache)
+
+    if not wrote_header:
+        with open(out_path, "w", newline="", encoding="utf-8") as f_out:
+            w = csv.DictWriter(
+                f_out,
+                fieldnames=["sourceurl", "title", "description", "http_status", "fetch_error"],
             )
-
-    out_path.parent.mkdir(parents=True, exist_ok=True)
-    with open(out_path, "w", newline="", encoding="utf-8") as f_out:
-        w = csv.DictWriter(f_out, fieldnames=fieldnames)
-        w.writeheader()
-        w.writerows(results)
-
-    save_cache(cache_path, cache)
+            w.writeheader()
 
     elapsed = time.time() - start
     print(f"Saved: {out_path}")
     print(f"Cache: {cache_path}")
-    print(f"Time: {elapsed:.2f}s  |  Rows: {len(rows):,}")
+    print(f"Time: {elapsed:.2f}s  |  Rows: {total_rows:,}")
 
     return out_path
 
