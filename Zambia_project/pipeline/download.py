@@ -23,7 +23,7 @@ STATE_DIR = PROJECT_ROOT / "data" / "interim" / "_state" / "gdelt"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 # Conservative worker count to avoid memory / bandwidth spikes.
-MAX_WORKERS = 4
+MAX_WORKERS = 8
 CHUNK_SIZE = 1024 * 1024
 TIMEOUT = (15, 120)
 
