@@ -87,6 +87,64 @@ EVENT_FIELDS = [
 
 HEADER = ["ingest_time"] + EVENT_FIELDS
 
+ZAMBIA_GEO_FIPS = "ZA"
+ZAMBIA_ACTOR_CAMEO = "ZMB"
+
+TEXT_TERMS = [
+    "zambia",
+    "zambian",
+    "lusaka",
+    "copperbelt",
+    "ndola",
+    "kitwe",
+    "kabwe",
+    "livingstone",
+    "chingola",
+    "solwezi",
+    "chipata",
+    "kasama",
+    "mongu",
+]
+
+EVENT_INDEX = {name: i for i, name in enumerate(EVENT_FIELDS)}
+
+def _field(row: List[str], name: str) -> str:
+    idx = EVENT_INDEX[name]
+    if idx >= len(row):
+        return ""
+    return (row[idx] or "").strip()
+
+def row_is_zambia(row: List[str]) -> bool:
+    geo_country_cols = ["actiongeo_countrycode", "actor1geo_countrycode", "actor2geo_countrycode"]
+    geo_adm1_cols = ["actiongeo_adm1code", "actor1geo_adm1code", "actor2geo_adm1code"]
+    geo_full_cols = ["actiongeo_fullname", "actor1geo_fullname", "actor2geo_fullname"]
+    actor_country_cols = ["actor1countrycode", "actor2countrycode"]
+    actor_name_cols = ["actor1name", "actor2name"]
+
+    for c in geo_country_cols:
+        if _field(row, c) == ZAMBIA_GEO_FIPS:
+            return True
+
+    for c in geo_adm1_cols:
+        if _field(row, c).startswith(ZAMBIA_GEO_FIPS):
+            return True
+
+    for c in actor_country_cols:
+        if _field(row, c) == ZAMBIA_ACTOR_CAMEO:
+            return True
+
+    for c in geo_full_cols:
+        text = _field(row, c).lower()
+        if any(term in text for term in TEXT_TERMS):
+            return True
+
+    for c in actor_name_cols:
+        text = _field(row, c).lower()
+        if "zambia" in text or "zambian" in text:
+            return True
+
+    return False
+
 
 def parse_masterfile(text: str) -> List[Tuple[int, str, str]]:
     rows: List[Tuple[int, str, str]] = []
@@ -147,7 +205,7 @@ def pad_or_trim(row: List[str], n: int) -> List[str]:
     return row
 
 
-def extract_rows_from_zip(url: str) -> List[List[str]]:
+def iter_rows_from_zip(url: str):
     ingest_dt = url_timestamp(url)
     ingest_time = ingest_dt.strftime("%Y%m%d%H%M%S") if ingest_dt else ""
 
@@ -156,7 +214,6 @@ def extract_rows_from_zip(url: str) -> List[List[str]]:
 
     buf = io.BytesIO(r.content)
 
-    out_rows: List[List[str]] = []
     with zipfile.ZipFile(buf) as zf:
         inner = zf.namelist()[0]
         with zf.open(inner) as f_in:
@@ -168,9 +225,9 @@ def extract_rows_from_zip(url: str) -> List[List[str]]:
                 if not row:
                     continue
                 row = pad_or_trim(row, len(EVENT_FIELDS))
-                out_rows.append([ingest_time] + row)
 
-    return out_rows
+                if row_is_zambia(row):
+                    yield [ingest_time] + row
 
 
 def main(target_day: str) -> None:
@@ -226,13 +283,10 @@ def main(target_day: str) -> None:
         # print("Ensuring CSV header exists...", flush=True)  # DEBUG
         ensure_header(out_path)
 
-        # print(f"Downloading + extracting ZIP: {filename}", flush=True)  # DEBUG
-        extracted = extract_rows_from_zip(url)
-        # print(f"Extracted {len(extracted)} rows", flush=True)  # DEBUG
-
-        # print(f"Writing rows to {out_path}...", flush=True)  # DEBUG
         with open(out_path, "a", newline="", encoding="utf-8") as f:
-            csv.writer(f).writerows(extracted)
+            writer = csv.writer(f)
+            for out_row in iter_rows_from_zip(url):
+                writer.writerow(out_row)
 
         # print("Creating marker file...", flush=True)  # DEBUG
         marker.touch()
