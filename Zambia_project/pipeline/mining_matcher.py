@@ -143,22 +143,32 @@ def run_mining_matcher(
 
         if key in scrape_cache:
             cached = scrape_cache[key]
-            return {
-                "url_normalized": key,
-                "final_url": cached.get("final_url", url),
-                "scrape_ok": str(cached.get("scrape_ok", "")).lower() in {"true", "1", "yes"},
-                "scrape_status": cached.get("scrape_status", ""),
-                "scrape_error": cached.get("scrape_error", ""),
-                "scraped_title": cached.get("scraped_title", ""),
-                "scraped_published_date": cached.get("scraped_published_date", "unknown"),
-                "text": cached.get("text", ""),
-                "http_status": cached.get("http_status", ""),
-                "used_wayback": str(cached.get("used_wayback", "")).lower() in {"true", "1", "yes"},
-                "wayback_url": cached.get("wayback_url", ""),
-                "wayback_timestamp": cached.get("wayback_timestamp", ""),
-            }
+
+            cached_ok = str(cached.get("scrape_ok", "")).lower() in {"true", "1", "yes"}
+            cached_used_wayback = str(cached.get("used_wayback", "")).lower() in {"true", "1", "yes"}
+
+            # Long-term rule:
+            # - reuse successful scrapes
+            # - reuse previous Wayback rescues
+            # - but DO NOT reuse old failed scrapes, because they may now be recoverable via Wayback
+            if cached_ok:
+                return {
+                    "url_normalized": key,
+                    "final_url": cached.get("final_url", url),
+                    "scrape_ok": cached_ok,
+                    "scrape_status": cached.get("scrape_status", ""),
+                    "scrape_error": cached.get("scrape_error", ""),
+                    "scraped_title": cached.get("scraped_title", ""),
+                    "scraped_published_date": cached.get("scraped_published_date", "unknown"),
+                    "text": cached.get("text", ""),
+                    "http_status": cached.get("http_status", ""),
+                    "used_wayback": cached_used_wayback,
+                    "wayback_url": cached.get("wayback_url", ""),
+                    "wayback_timestamp": cached.get("wayback_timestamp", ""),
+                }
 
         out = scrape_one(url)
+
         scrape_cache[key] = {
             "url_normalized": out["url_normalized"],
             "final_url": out.get("final_url", url),
@@ -174,7 +184,6 @@ def run_mining_matcher(
             "wayback_timestamp": out.get("wayback_timestamp", ""),
         }
         return out
-
     urls = [_norm_str(r.get("sourceurl")) for r in rows]
 
     with ThreadPoolExecutor(max_workers=MAX_WORKERS) as ex:
