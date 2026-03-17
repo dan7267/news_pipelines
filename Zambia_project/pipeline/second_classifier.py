@@ -27,8 +27,9 @@ import json
 import re
 from bs4 import BeautifulSoup
 from dateutil import parser as dtparser
-from urllib.parse import urlparse
+from urllib.parse import urlparse, quote
 from concurrent.futures import ThreadPoolExecutor, as_completed
+import time
 
 # Try to import Newspaper3k as an optional fallback extractor
 try:
@@ -83,7 +84,164 @@ def parse_date_str(s: str) -> str:
         return dt.date().isoformat()
     except Exception:
         return "unknown"
+    
+def is_valid_http_url(url: str) -> bool:
+    if not isinstance(url, str):
+        return False
+    url = url.strip()
+    if not url:
+        return False
+    if not (url.startswith("http://") or url.startswith("https://")):
+        return False
+    try:
+        p = urlparse(url)
+        return bool(p.scheme in {"http", "https"} and p.netloc)
+    except Exception:
+        return False
+    
+def wayback_lookup(url: str, timeout: int = 15) -> dict:
+    """
+    Return the closest available Wayback snapshot for a URL.
 
+    Output:
+      {
+        "ok": bool,
+        "archive_url": str,
+        "timestamp": str,
+        "status": str,
+        "error": str,
+      }
+    """
+    if not is_valid_http_url(url):
+        return {
+            "ok": False,
+            "archive_url": "",
+            "timestamp": "",
+            "status": "",
+            "error": "invalid_url",
+        }
+
+    api_url = "https://archive.org/wayback/available"
+    try:
+        resp = requests.get(
+            api_url,
+            params={"url": url},
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0"},
+        )
+        resp.raise_for_status()
+        data = resp.json()
+
+        snapshots = data.get("archived_snapshots", {}) or {}
+        closest = snapshots.get("closest") or {}
+
+        archive_url = closest.get("url", "") or ""
+        timestamp = closest.get("timestamp", "") or ""
+        status = str(closest.get("status", "") or "")
+
+        if archive_url:
+            return {
+                "ok": True,
+                "archive_url": archive_url,
+                "timestamp": timestamp,
+                "status": status,
+                "error": "",
+            }
+
+        return {
+            "ok": False,
+            "archive_url": "",
+            "timestamp": "",
+            "status": "",
+            "error": "no_snapshot_found",
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "archive_url": "",
+            "timestamp": "",
+            "status": "",
+            "error": f"{type(e).__name__}: {e}",
+        }
+
+def fetch_html(url: str, timeout: int = 20) -> dict:
+    try:
+        resp = requests.get(
+            url,
+            timeout=timeout,
+            headers={"User-Agent": "Mozilla/5.0"},
+            allow_redirects=True,
+        )
+        status_code = resp.status_code
+        final_url = resp.url
+
+        if status_code >= 400:
+            return {
+                "ok": False,
+                "html": "",
+                "status_code": status_code,
+                "final_url": final_url,
+                "error": f"HTTP {status_code}",
+            }
+
+        return {
+            "ok": True,
+            "html": resp.text or "",
+            "status_code": status_code,
+            "final_url": final_url,
+            "error": "",
+        }
+
+    except Exception as e:
+        return {
+            "ok": False,
+            "html": "",
+            "status_code": None,
+            "final_url": url,
+            "error": f"{type(e).__name__}: {e}",
+        }
+    
+def extract_from_html(html_text: str, url: str = "") -> dict:
+    """
+    Extract article text/title/date from raw HTML.
+    """
+    try:
+        text = trafilatura.extract(
+            html_text,
+            include_comments=False,
+            include_tables=False,
+        ) or ""
+    except Exception:
+        text = ""
+
+    title = ""
+    try:
+        meta = trafilatura.metadata.extract_metadata(html_text)
+        title = (meta.title or "") if meta else ""
+    except Exception:
+        title = ""
+
+    if not title:
+        try:
+            soup = BeautifulSoup(html_text or "", "html.parser")
+            if soup.title and soup.title.get_text(strip=True):
+                title = soup.title.get_text(strip=True)
+        except Exception:
+            pass
+
+    pub_date = extract_date_from_html(html_text)
+    if pub_date == "unknown" and url:
+        pub_date = fallback_date_from_url(url)
+
+    return {
+        "ok": bool(text.strip()),
+        "text": text,
+        "title": title,
+        "html": html_text,
+        "date": pub_date,
+        "error": "" if text.strip() else "text_too_short_or_failed",
+    }
 
 def extract_date_from_html(html_text: str) -> str:
     """Try common meta tags and time elements."""
@@ -153,20 +311,134 @@ def trafilatura_extract(url: str, timeout: int = 20) -> dict:
 
 def newspaper_extract(url: str, timeout: int = 20) -> dict:
     """Fallback: Newspaper3k extraction."""
-
     if not _HAS_NEWSPAPER:
-        return {"ok": False, "text": "", "title": "", "html": "", "final_url": url}
+        return {
+            "ok": False,
+            "text": "",
+            "title": "",
+            "html": "",
+            "final_url": url,
+            "error": "newspaper_not_installed",
+        }
 
     try:
         art = _NPArticle(url)
         art.download()
         art.parse()
-        text = (art.text or "")
-        title = (art.title or "")
-        return {"ok": bool(text.strip()), "text": text, "title": title, "html": "", "final_url": url}
-    except Exception:
-        return {"ok": False, "text": "", "title": "", "html": "", "final_url": url}
+        text = art.text or ""
+        title = art.title or ""
+        return {
+            "ok": bool(text.strip()),
+            "text": text,
+            "title": title,
+            "html": "",
+            "final_url": url,
+            "error": "" if text.strip() else "newspaper_empty_text",
+        }
+    except Exception as e:
+        return {
+            "ok": False,
+            "text": "",
+            "title": "",
+            "html": "",
+            "final_url": url,
+            "error": f"{type(e).__name__}: {e}",
+        }
 
+def scrape_article_with_wayback(url: str, timeout: int = 20, try_wayback: bool = True) -> dict:
+    """
+    Try:
+      1. live trafilatura
+      2. live newspaper3k
+      3. Wayback snapshot fetch + extract
+
+    Always returns a fixed schema.
+    """
+    result = {
+        "sourceurl": url,
+        "scrape_success": False,
+        "scrape_status": "",
+        "scrape_error": "",
+        "scraped_text": "",
+        "scraped_title": "",
+        "scraped_date": "unknown",
+        "final_url": url,
+        "http_status": None,
+        "used_wayback": False,
+        "wayback_url": "",
+        "wayback_timestamp": "",
+    }
+
+    # ---------- Validate ----------
+    if not is_valid_http_url(url):
+        result["scrape_status"] = "invalid_url"
+        result["scrape_error"] = "sourceurl_not_valid_http_url"
+        return result
+
+    # ---------- Try live trafilatura ----------
+    live_html = fetch_html(url, timeout=timeout)
+    result["http_status"] = live_html["status_code"]
+    result["final_url"] = live_html["final_url"]
+
+    if live_html["ok"] and live_html["html"]:
+        extracted = extract_from_html(live_html["html"], url=live_html["final_url"])
+        if extracted["ok"]:
+            result["scrape_success"] = True
+            result["scrape_status"] = "live_ok_trafilatura"
+            result["scraped_text"] = extracted["text"]
+            result["scraped_title"] = extracted["title"]
+            result["scraped_date"] = extracted["date"]
+            return result
+
+    # ---------- Try live newspaper3k ----------
+    np_res = newspaper_extract(url, timeout=timeout)
+    if np_res.get("ok"):
+        result["scrape_success"] = True
+        result["scrape_status"] = "live_ok_newspaper"
+        result["scraped_text"] = np_res.get("text", "") or ""
+        result["scraped_title"] = np_res.get("title", "") or ""
+        result["scraped_date"] = fallback_date_from_url(url)
+        result["scrape_error"] = ""
+        return result
+
+    live_error = live_html["error"] or np_res.get("error", "") or "live_scrape_failed"
+
+    # ---------- Wayback fallback ----------
+    if try_wayback:
+        wb = wayback_lookup(url, timeout=timeout)
+        if wb["ok"]:
+            result["used_wayback"] = True
+            result["wayback_url"] = wb["archive_url"]
+            result["wayback_timestamp"] = wb["timestamp"]
+
+            # Small pause is polite and can reduce transient issues
+            time.sleep(0.2)
+
+            wb_html = fetch_html(wb["archive_url"], timeout=timeout)
+            if wb_html["ok"] and wb_html["html"]:
+                extracted = extract_from_html(wb_html["html"], url=url)
+                if extracted["ok"]:
+                    result["scrape_success"] = True
+                    result["scrape_status"] = "wayback_ok"
+                    result["scraped_text"] = extracted["text"]
+                    result["scraped_title"] = extracted["title"]
+                    result["scraped_date"] = extracted["date"]
+                    result["final_url"] = wb["archive_url"]
+                    result["scrape_error"] = ""
+                    return result
+
+            result["scrape_status"] = "wayback_failed"
+            result["scrape_error"] = wb_html["error"] or "wayback_extraction_failed"
+            return result
+
+        result["scrape_status"] = "live_failed_no_wayback"
+        result["scrape_error"] = f"{live_error} | wayback: {wb['error']}"
+        return result
+
+    # ---------- No wayback attempted ----------
+    result["scrape_status"] = "live_failed"
+    result["scrape_error"] = live_error
+    return result
 
 
 
@@ -334,9 +606,14 @@ SCRAPE_CACHE_FIELDS = [
     "final_url",
     "scrape_ok",
     "scrape_status",
+    "scrape_error",
     "scraped_title",
     "scraped_published_date",
     "text",
+    "http_status",
+    "used_wayback",
+    "wayback_url",
+    "wayback_timestamp",
 ]
 
 # prompt sizing
@@ -381,7 +658,10 @@ def save_scrape_cache(cache_path: Path, cache: Dict[str, Dict[str, str]]) -> Non
 
 
 def scrape_one(url: str) -> Dict[str, Any]:
-    """Scrape text + title + published date (best effort)."""
+    """
+    Scrape text + title + published date (best effort),
+    with Wayback fallback.
+    """
 
     url = (url or "").strip()
     url_norm = normalize_url_basic(url)
@@ -389,48 +669,47 @@ def scrape_one(url: str) -> Dict[str, Any]:
     # politeness
     time.sleep(random.uniform(*SLEEP_BETWEEN_REQ))
 
-    # First try trafilatura
-    tri = trafilatura_extract(url, timeout=SCRAPE_TIMEOUT_S)
+    res = scrape_article_with_wayback(
+        url=url,
+        timeout=SCRAPE_TIMEOUT_S,
+        try_wayback=True,
+    )
 
-    ok = bool(tri.get("ok")) and len((tri.get("text") or "").strip()) >= MIN_TEXT_CHARS
-    text = (tri.get("text") or "").strip()
-    title = (tri.get("title") or "").strip()
-    html_text = tri.get("html") or ""
+    text = (res.get("scraped_text") or "").strip()
+    title = (res.get("scraped_title") or "").strip()
+    pub = _norm_str(res.get("scraped_date")) or "unknown"
 
-    if not ok:
-        npd = newspaper_extract(url, timeout=SCRAPE_TIMEOUT_S)
-        ok2 = bool(npd.get("ok")) and len((npd.get("text") or "").strip()) >= MIN_TEXT_CHARS
-        if ok2:
-            ok = True
-            text = (npd.get("text") or "").strip()
-            title = (npd.get("title") or "").strip()
-            html_text = html_text or ""
+    ok = bool(res.get("scrape_success")) and len(text) >= MIN_TEXT_CHARS
 
     if not ok:
         return {
             "url_normalized": url_norm,
-            "final_url": url,
+            "final_url": res.get("final_url", url),
             "scrape_ok": False,
-            "scrape_status": "text_too_short_or_failed",
+            "scrape_status": res.get("scrape_status", "text_too_short_or_failed"),
+            "scrape_error": res.get("scrape_error", ""),
             "scraped_title": title,
-            "scraped_published_date": fallback_date_from_url(url),
+            "scraped_published_date": pub if pub != "unknown" else fallback_date_from_url(url),
             "text": "",
+            "http_status": res.get("http_status"),
+            "used_wayback": bool(res.get("used_wayback", False)),
+            "wayback_url": res.get("wayback_url", ""),
+            "wayback_timestamp": res.get("wayback_timestamp", ""),
         }
-
-    pub = "unknown"
-    if html_text:
-        pub = extract_date_from_html(html_text)
-    if pub == "unknown":
-        pub = fallback_date_from_url(url)
 
     return {
         "url_normalized": url_norm,
-        "final_url": url,
+        "final_url": res.get("final_url", url),
         "scrape_ok": True,
-        "scrape_status": "ok",
+        "scrape_status": res.get("scrape_status", "ok"),
+        "scrape_error": res.get("scrape_error", ""),
         "scraped_title": title,
         "scraped_published_date": pub,
         "text": text,
+        "http_status": res.get("http_status"),
+        "used_wayback": bool(res.get("used_wayback", False)),
+        "wayback_url": res.get("wayback_url", ""),
+        "wayback_timestamp": res.get("wayback_timestamp", ""),
     }
 
 
@@ -607,9 +886,14 @@ def run_stage2(
                 "final_url": cached.get("final_url", url),
                 "scrape_ok": str(cached.get("scrape_ok", "")).lower() in {"true", "1", "yes"},
                 "scrape_status": cached.get("scrape_status", ""),
+                "scrape_error": cached.get("scrape_error", ""),
                 "scraped_title": cached.get("scraped_title", ""),
                 "scraped_published_date": cached.get("scraped_published_date", "unknown"),
                 "text": cached.get("text", ""),
+                "http_status": cached.get("http_status", ""),
+                "used_wayback": str(cached.get("used_wayback", "")).lower() in {"true", "1", "yes"},
+                "wayback_url": cached.get("wayback_url", ""),
+                "wayback_timestamp": cached.get("wayback_timestamp", ""),
             }
 
         try:
@@ -620,9 +904,14 @@ def run_stage2(
                 "final_url": url,
                 "scrape_ok": False,
                 "scrape_status": f"scrape_exception:{type(e).__name__}",
+                "scrape_error": f"{type(e).__name__}: {e}",
                 "scraped_title": "",
                 "scraped_published_date": "unknown",
                 "text": "",
+                "http_status": "",
+                "used_wayback": False,
+                "wayback_url": "",
+                "wayback_timestamp": "",
             }
 
         # save into cache dict
@@ -631,9 +920,14 @@ def run_stage2(
             "final_url": out.get("final_url", url),
             "scrape_ok": str(out.get("scrape_ok", False)),
             "scrape_status": out.get("scrape_status", ""),
+            "scrape_error": out.get("scrape_error", ""),
             "scraped_title": out.get("scraped_title", ""),
             "scraped_published_date": out.get("scraped_published_date", "unknown"),
             "text": out.get("text", ""),
+            "http_status": str(out.get("http_status", "")),
+            "used_wayback": str(out.get("used_wayback", False)),
+            "wayback_url": out.get("wayback_url", ""),
+            "wayback_timestamp": out.get("wayback_timestamp", ""),
         }
 
         return out
@@ -652,8 +946,14 @@ def run_stage2(
     # First: attach scrape fields and handle non-LLM rows immediately
     for idx, (r, sc) in enumerate(zip(rows, scraped)):
         r["scrape_status"] = sc.get("scrape_status", "")
+        r["scrape_error"] = sc.get("scrape_error", "")
         r["scraped_title"] = sc.get("scraped_title", "")
         r["scraped_published_date"] = sc.get("scraped_published_date", "unknown")
+        r["final_url"] = sc.get("final_url", _norm_str(r.get("sourceurl")))
+        r["http_status"] = sc.get("http_status", "")
+        r["used_wayback"] = bool(sc.get("used_wayback", False))
+        r["wayback_url"] = sc.get("wayback_url", "")
+        r["wayback_timestamp"] = sc.get("wayback_timestamp", "")
 
         text = sc.get("text", "")
 
