@@ -625,6 +625,20 @@ def _norm_str(v: Any) -> str:
         return ""
     return str(v).strip()
 
+MIN_METADATA_FALLBACK_CHARS = 30
+
+def build_metadata_fallback_text(row: Dict[str, Any]) -> str:
+    title = _norm_str(row.get("title"))
+    description = _norm_str(row.get("description"))
+
+    parts = []
+    if title:
+        parts.append(f"TITLE: {title}")
+    if description:
+        parts.append(f"DESCRIPTION: {description}")
+
+    return "\n".join(parts).strip()
+
 
 def normalize_url_basic(url: str) -> str:
     """Light normalization to make scrape cache more stable."""
@@ -719,6 +733,7 @@ def llm_stage2(
     scraped_title: str,
     published_date: str,
     article_text: str,
+    input_mode: str = "scraped_text",
     model: str = DEFAULT_MODEL,
     timeout: int = 120,
 ) -> Dict[str, Any]:
@@ -763,6 +778,16 @@ Rules:
 - If scrape failed or text is too short, mining_related must be false
 - Return JSON only with keys:
   in_zambia, in_zambia_confidence, mining_related, mining_related_confidence, impacts, impact_confidence, impact_evidence, mine_name, region, mineral_type, mining_company
+Input mode:
+- If input_mode = "scraped_text", the text is article body text.
+- If input_mode = "metadata_fallback", the text is only metadata-derived text (title/description), not the full article.
+
+Extra rules for metadata_fallback:
+- You may still classify mining_related and in_zambia if clearly supported.
+- Be more conservative than usual.
+- Do NOT extract impacts unless they are explicitly and unambiguously supported by the metadata text.
+- If impacts are not clearly supported, return an empty impacts list.
+  
 
 ADDITIONAL ENTITY EXTRACTION
 
@@ -795,6 +820,7 @@ The company operating or owning the mine. Return the company name only (no descr
         "url": url,
         "scraped_title": scraped_title,
         "published_date": published_date,
+        "input_mode": input_mode,
         "text": text,
     }
 
@@ -955,10 +981,22 @@ def run_stage2(
         r["wayback_url"] = sc.get("wayback_url", "")
         r["wayback_timestamp"] = sc.get("wayback_timestamp", "")
 
-        text = sc.get("text", "")
+        scraped_text = (sc.get("text") or "").strip()
+        metadata_text = build_metadata_fallback_text(r)
 
-        if not sc.get("scrape_ok", False) or len((text or "").strip()) < MIN_TEXT_CHARS:
-            # Conservative: no scrape -> not mining
+        has_scraped_text = bool(sc.get("scrape_ok", False)) and len(scraped_text) >= MIN_TEXT_CHARS
+        has_metadata_fallback = len(metadata_text) >= MIN_METADATA_FALLBACK_CHARS
+
+        if has_scraped_text:
+            llm_jobs.append((idx, r, sc, scraped_text, "scraped_text"))
+
+        elif has_metadata_fallback:
+            # Fallback: allow stage 2 to classify from title/description
+            r["scrape_status"] = (r.get("scrape_status", "") or "") + "|metadata_fallback"
+            llm_jobs.append((idx, r, sc, metadata_text, "metadata_fallback"))
+
+        else:
+            # No usable scrape text and no usable metadata
             r["mining_related"] = False
             r["mining_related_confidence"] = 0.0
             r["impact_level1"] = ""
@@ -972,30 +1010,33 @@ def run_stage2(
             r["region"] = ""
             r["mine_name"] = ""
             r["mining_company"] = ""
-        else:
-            llm_jobs.append((idx, r, sc, text))
 
     print(f"Rows eligible for LLM: {len(llm_jobs):,}")
 
     def run_one_llm_job(job):
-        idx, r, sc, text = job
+        idx, r, sc, text, input_mode = job
+
+        llm_title = _norm_str(sc.get("scraped_title")) or _norm_str(r.get("title"))
+        llm_date = _norm_str(sc.get("scraped_published_date"))
 
         result = llm_stage2(
             client=client,
             url=_norm_str(r.get("sourceurl")),
-            scraped_title=_norm_str(sc.get("scraped_title")),
-            published_date=_norm_str(sc.get("scraped_published_date")),
+            scraped_title=llm_title,
+            published_date=llm_date,
             article_text=text,
             model=model,
+            input_mode=input_mode,
         )
-        return idx, result
+        return idx, result, input_mode
 
     with ThreadPoolExecutor(max_workers=LLM_MAX_WORKERS) as ex:
         futures = [ex.submit(run_one_llm_job, job) for job in llm_jobs]
 
         for fut in tqdm(as_completed(futures), total=len(futures), desc="LLM classify"):
-            idx, result = fut.result()
+            idx, result, input_mode = fut.result()
             r = rows[idx]
+            r["stage2_input_mode"] = input_mode
 
             r["mining_related"] = bool(result.get("mining_related", False))
             r["mining_related_confidence"] = round(float(result.get("mining_related_confidence", 0.0)), 3)
