@@ -2,7 +2,7 @@ import os
 import sys
 import glob
 
-ROOT = os.path.dirname(os.path.dirname(__file__))
+ROOT = os.path.dirname(__file__)
 
 DRY_RUN = "--delete" not in sys.argv
 
