@@ -10,7 +10,7 @@ import filter
 import enrich
 import fix_title_description
 import relevant_urls
-# import cleanup_intermediates
+import cleanup_intermediates
 
 
 DATE_FMT = "%Y%m%d"

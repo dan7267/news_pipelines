@@ -1,0 +1,52 @@
+import os
+import sys
+import glob
+
+ROOT = os.path.dirname(os.path.dirname(__file__))
+
+DRY_RUN = "--delete" not in sys.argv
+
+def candidates(date_str, root=ROOT):
+    yyyy = date_str[:4]
+    mm = date_str[4:6]
+    dd = date_str[6:8]
+    day_dir = os.path.join(root, "data", "interim", "gdelt_event_context_daily", yyyy, mm, dd)
+    scored_dir = os.path.join(root, "data", "processed", "model_scored_daily", yyyy, mm, dd)
+    state_dir = os.path.join(root, "data", "interim", "_state")
+    return [
+        os.path.join(day_dir, f"{date_str}_event_context.csv"),
+        os.path.join(day_dir, f"{date_str}_event_context_deduped.csv"),
+        os.path.join(day_dir, f"{date_str}_event_context_deduped_filtered.csv"),
+        os.path.join(day_dir, f"{date_str}_event_context_deduped_enriched.csv"),
+        os.path.join(state_dir, f"url_title_meta_cache_{date_str}.csv"),
+        os.path.join(scored_dir, f"{date_str}_experts_scored.csv"),
+    ]
+
+def cleanup_day(date_str, root=ROOT):
+    for path in candidates(date_str, root):
+        if os.path.exists(path):
+            os.remove(path)
+
+completed = [
+    os.path.splitext(os.path.basename(f))[0]
+    for f in glob.glob(os.path.join(ROOT, "data", "urls", "????????.csv"))
+]
+
+total_bytes = 0
+total_files = 0
+
+for date_str in sorted(completed):
+    for path in candidates(date_str):
+        if os.path.exists(path):
+            size = os.path.getsize(path)
+            total_bytes += size
+            total_files += 1
+            if DRY_RUN:
+                print(f"  would delete  {os.path.relpath(path, ROOT)}  ({size / 1e6:.1f} MB)")
+            else:
+                os.remove(path)
+                print(f"  deleted  {os.path.relpath(path, ROOT)}  ({size / 1e6:.1f} MB)")
+
+print(f"\n{total_files} files  |  {total_bytes / 1e9:.2f} GB")
+if DRY_RUN:
+    print("Dry run — nothing deleted. Run with --delete to remove files.")
