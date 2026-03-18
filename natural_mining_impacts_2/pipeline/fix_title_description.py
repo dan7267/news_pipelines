@@ -4,9 +4,7 @@ import pandas as pd
 from ftfy import fix_text
 
 # State files stay in the flat _state folder for easy cross-referencing
-STATE_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "state"
-
-
+STATE_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "_state"
 
 # --- Mojibake Mapping (Unchanged logic) ---
 EM_DASH_BAD = "\u00e2\u20ac\u201d"

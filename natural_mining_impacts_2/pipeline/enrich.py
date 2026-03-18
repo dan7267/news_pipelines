@@ -400,7 +400,8 @@ async def _run_all(files: List[Path], cache: Dict[str, dict], cache_writer: Cach
 # =========================
 
 def main(target_date: str) -> None:
-    cache_path = Path(f"data/interim/_state/url_title_meta_cache_{target_date}.csv")
+    # cache_path = Path(f"data/interim/_state/url_title_meta_cache_{target_date}.csv")
+    cache_path = Path(__file__).resolve().parent.parent / "data" / "interim" / "_state" / f"url_title_meta_cache_{target_date}.csv"
     cache = load_cache(cache_path)
 
     files = list(BASE_DIR.rglob(f"*{target_date}*_deduped_filtered.csv"))
