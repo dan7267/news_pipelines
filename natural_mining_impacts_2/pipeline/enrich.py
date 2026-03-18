@@ -21,7 +21,8 @@ from tqdm import tqdm
 # CONFIG
 # =========================
 
-BASE_DIR = Path("data/interim/gdelt_event_context_daily")
+
+BASE_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "gdelt_event_context_daily"
 OUTPUT_SUFFIX = "_enriched.csv"
 
 USER_AGENT = "Mozilla/5.0 (compatible; LithiumQRA/1.0)"

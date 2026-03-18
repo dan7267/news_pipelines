@@ -11,12 +11,12 @@ from typing import Optional, List, Tuple, Dict
 MASTER = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
 TARGET_SUFFIX = ".export.CSV.zip"
 
-# One file per day
-OUT_DIR = Path("data/interim/gdelt_event_context_daily")
+
+OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "gdelt_event_context_daily"
 OUT_DIR.mkdir(parents=True, exist_ok=True)
 
 # Track processed 15-min files so reruns don't duplicate
-STATE_DIR = Path("data/interim/_state/gdelt")
+STATE_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "_state" / "gdelt"
 STATE_DIR.mkdir(parents=True, exist_ok=True)
 
 

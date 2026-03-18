@@ -2,8 +2,8 @@ import csv
 import re
 from pathlib import Path
 from urllib.parse import urlparse, unquote
+BASE_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "gdelt_event_context_daily"
 
-BASE_DIR = Path("data/interim/gdelt_event_context_daily")
 
 # Tune these based on what you see in your URLs
 NEGATIVE_PATH_KEYWORDS = [
