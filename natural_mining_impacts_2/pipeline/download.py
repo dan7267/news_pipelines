@@ -1,15 +1,18 @@
-import re
-import io
 import csv
+import re
+import tempfile
 import zipfile
-import requests
 from datetime import datetime
 from pathlib import Path
-from typing import Optional, List, Tuple, Dict
+from typing import Iterator, List, Optional, Tuple
+
+import requests
 
 
 MASTER = "http://data.gdeltproject.org/gdeltv2/masterfilelist.txt"
 TARGET_SUFFIX = ".export.CSV.zip"
+CHUNK_SIZE = 1024 * 1024  # 1 MB
+REQUEST_TIMEOUT = (20, 120)
 
 
 OUT_DIR = Path(__file__).resolve().parent.parent / "data" / "interim" / "gdelt_event_context_daily"
@@ -45,7 +48,7 @@ HEADER = [
 
 
 def parse_masterfile(text: str) -> List[Tuple[int, str, str]]:
-    rows = []
+    rows: List[Tuple[int, str, str]] = []
     for line in text.splitlines():
         line = line.strip()
         if not line:
@@ -69,7 +72,6 @@ def url_timestamp(url: str) -> Optional[datetime]:
 
 
 def safe_get(row: List[str], idx: int, default: str = "") -> str:
-    # supports negative indices too
     try:
         return row[idx]
     except Exception:
@@ -77,25 +79,17 @@ def safe_get(row: List[str], idx: int, default: str = "") -> str:
 
 
 def processed_marker(ts: datetime) -> Path:
-    # one marker file per 15-min interval
     return STATE_DIR / f"{ts.strftime('%Y%m%d%H%M%S')}.done"
 
 
 def daily_output_path(ts: datetime) -> Path:
-    """
-    Creates and returns path for data/interim/gdelt_event_context_daily/YYYY/MM/DD/
-    """
     year = ts.strftime("%Y")
     month = ts.strftime("%m")
-    day_folder = ts.strftime("%d")  # Extract just the day for the folder name
-    day_file = ts.strftime("%Y%m%d") # For the filename
+    day_folder = ts.strftime("%d")
+    day_file = ts.strftime("%Y%m%d")
 
-    # Build the full directory path
     out_dir = OUT_DIR / year / month / day_folder
-    
-    # Create the nested directory structure if it doesn't exist
     out_dir.mkdir(parents=True, exist_ok=True)
-    
     return out_dir / f"{day_file}_event_context.csv"
 
 
@@ -107,29 +101,20 @@ def ensure_header(path: Path) -> None:
         writer.writerow(HEADER)
 
 
-def extract_rows_from_zip(url: str) -> List[List[str]]:
+def iter_extracted_rows_from_zipfile(zip_path: Path, ingest_time: str) -> Iterator[List[str]]:
     """
-    Returns extracted rows (as list-of-fields) from one zipped export file.
-    We return structured fields already mapped to HEADER order.
+    Stream rows from a downloaded GDELT zip on disk.
+    This avoids holding the whole decompressed interval in memory.
     """
-    ingest_dt = url_timestamp(url)
-    ingest_time = ingest_dt.strftime("%Y%m%d%H%M%S") if ingest_dt else ""
+    with zipfile.ZipFile(zip_path) as zf:
+        names = zf.namelist()
+        if not names:
+            return
 
-    r = requests.get(url, stream=True, timeout=60)
-    r.raise_for_status()
-
-    buf = io.BytesIO()
-    for chunk in r.iter_content(chunk_size=1024 * 1024):
-        if chunk:
-            buf.write(chunk)
-    buf.seek(0)
-
-    out_rows = []
-
-    with zipfile.ZipFile(buf) as zf:
-        inner = zf.namelist()[0]
+        inner = names[0]
         with zf.open(inner) as f_in:
-            reader = csv.reader(io.TextIOWrapper(f_in, encoding="utf-8", errors="replace"), delimiter="\t")
+            text_stream = (line.decode("utf-8", errors="replace") for line in f_in)
+            reader = csv.reader(text_stream, delimiter="\t")
 
             for row in reader:
                 if not row or len(row) < 10:
@@ -161,7 +146,7 @@ def extract_rows_from_zip(url: str) -> List[List[str]]:
                 numarticles = safe_get(row, 33)
                 avgtone = safe_get(row, 34)
 
-                out_rows.append([
+                yield [
                     globaleventid,
                     sqldate,
                     ingest_time,
@@ -182,57 +167,80 @@ def extract_rows_from_zip(url: str) -> List[List[str]]:
                     actiongeo_featureid,
                     dateadded,
                     sourceurl,
-                ])
+                ]
 
-    return out_rows
+
+def append_zip_rows_to_daily_csv(url: str, out_path: Path, session: requests.Session) -> int:
+    """
+    Download one zip to a temporary file on disk, then stream rows from it
+    directly into the daily CSV. Returns number of rows written.
+    """
+    ingest_dt = url_timestamp(url)
+    ingest_time = ingest_dt.strftime("%Y%m%d%H%M%S") if ingest_dt else ""
+
+    with tempfile.NamedTemporaryFile(suffix=".zip", delete=True) as tmp:
+        with session.get(url, stream=True, timeout=REQUEST_TIMEOUT) as resp:
+            resp.raise_for_status()
+            for chunk in resp.iter_content(chunk_size=CHUNK_SIZE):
+                if chunk:
+                    tmp.write(chunk)
+        tmp.flush()
+
+        rows_written = 0
+        with open(out_path, "a", newline="", encoding="utf-8") as f_out:
+            writer = csv.writer(f_out)
+            for extracted_row in iter_extracted_rows_from_zipfile(Path(tmp.name), ingest_time):
+                writer.writerow(extracted_row)
+                rows_written += 1
+
+    return rows_written
 
 
 def main(target_day: str) -> None:
     """
     target_day: format 'YYYYMMDD' (e.g., '20230501')
     """
-    # 1. Fetch the master list
-    master_txt = requests.get(MASTER, timeout=60).text
-    rows = parse_masterfile(master_txt)
+    with requests.Session() as session:
+        master_resp = session.get(MASTER, timeout=REQUEST_TIMEOUT)
+        master_resp.raise_for_status()
+        rows = parse_masterfile(master_resp.text)
 
-    # 2. Filter for files matching that specific day
-    targets = []
-    for _, _, url in rows:
-        if not url.endswith(TARGET_SUFFIX):
-            continue
-        
-        # Extract the timestamp from the URL
-        ts = url_timestamp(url)
-        if ts and ts.strftime("%Y%m%d") == target_day:
-            targets.append((ts, url))
+        targets: List[Tuple[datetime, str]] = []
+        for _, _, url in rows:
+            if not url.endswith(TARGET_SUFFIX):
+                continue
 
-    if not targets:
-        print(f"No files found for date: {target_day}")
-        return
+            ts = url_timestamp(url)
+            if ts and ts.strftime("%Y%m%d") == target_day:
+                targets.append((ts, url))
 
-    targets.sort()
-    print(f"Found {len(targets)} files for {target_day}. Processing...")
+        if not targets:
+            print(f"No files found for date: {target_day}")
+            return
 
-    # 3. Process and concatenate
-    for ts, url in targets:
-        marker = processed_marker(ts)
-        if marker.exists():
-            print(f"Skipping (already done): {url.split('/')[-1]}")
-            continue
+        targets.sort()
+        print(f"Found {len(targets)} files for {target_day}. Processing...")
 
-        out_path = daily_output_path(ts)
-        ensure_header(out_path)
+        total_rows_written = 0
+        for ts, url in targets:
+            marker = processed_marker(ts)
+            if marker.exists():
+                print(f"Skipping (already done): {url.split('/')[-1]}")
+                continue
 
-        print(f"Processing: {ts.strftime('%H:%M')}")
-        extracted = extract_rows_from_zip(url)
+            out_path = daily_output_path(ts)
+            ensure_header(out_path)
 
-        with open(out_path, "a", newline="", encoding="utf-8") as f:
-            writer = csv.writer(f)
-            writer.writerows(extracted)
+            print(f"Processing: {ts.strftime('%H:%M')}")
+            rows_written = append_zip_rows_to_daily_csv(url, out_path, session)
+            print(f"  wrote {rows_written:,} rows")
+            total_rows_written += rows_written
 
-        marker.touch()
-    
+            marker.touch()
+
     print(f"Done! Daily file is at: {daily_output_path(targets[0][0])}")
+    print(f"Total rows written for {target_day}: {total_rows_written:,}")
+
 
 if __name__ == "__main__":
     day_to_process = input("Enter date to process (YYYYMMDD): ").strip()
