@@ -2,6 +2,7 @@
 import sys
 from pathlib import Path
 from datetime import datetime, timedelta
+from typing import Optional
 
 import pandas as pd
 
@@ -32,7 +33,7 @@ BASE_INTERIM_DIR = ROOT / "data" / "interim" / "gdelt_event_context_daily"
 COMBINED_OUTPUT = ROOT / "data" / "processed" / "sampled_training_pool.csv"
 
 
-def generate_every_8_days(start_date: str, end_date: str | None = None) -> list[str]:
+def generate_every_8_days(start_date: str, end_date: Optional[str] = None) -> list[str]:
     start = datetime.strptime(start_date, DATE_FMT)
     end = datetime.today() if end_date is None else datetime.strptime(end_date, DATE_FMT)
 
