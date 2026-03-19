@@ -50,7 +50,7 @@ def get_day_dir(date: str) -> Path:
     return BASE_INTERIM_DIR / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
 
 
-def find_filtered_csv_for_date(date: str) -> Path | None:
+def find_filtered_csv_for_date(date: str):
     day_dir = get_day_dir(date)
 
     if not day_dir.exists():
@@ -108,7 +108,7 @@ def sample_filtered_candidates(
     date: str,
     sample_n: int = SAMPLE_N,
     random_seed: int = RANDOM_SEED,
-) -> pd.DataFrame | None:
+):
     filtered_path = find_filtered_csv_for_date(date)
     if filtered_path is None:
         return None
@@ -142,7 +142,7 @@ def sample_filtered_candidates(
     return sampled
 
 
-def find_final_csv_for_date(date: str) -> Path | None:
+def find_final_csv_for_date(date: str):
     day_dir = get_day_dir(date)
 
     if not day_dir.exists():
@@ -179,7 +179,7 @@ def find_final_csv_for_date(date: str) -> Path | None:
     return best_path
 
 
-def load_final_output(date: str) -> pd.DataFrame | None:
+def load_final_output(date: str):
     final_path = find_final_csv_for_date(date)
     if final_path is None:
         return None
@@ -196,7 +196,7 @@ def load_final_output(date: str) -> pd.DataFrame | None:
     return df
 
 
-def run_one_date(date: str) -> pd.DataFrame | None:
+def run_one_date(date: str):
     print(f"\n==============================")
     print(f"Processing date: {date}")
     print(f"==============================")
@@ -231,7 +231,7 @@ def run_one_date(date: str) -> pd.DataFrame | None:
     return final_df
 
 
-def start_pipeline(start_date: str = START_DATE, end_date: str | None = None):
+def start_pipeline(start_date: str = START_DATE, end_date: Optional[str] = None):
     dates = generate_every_8_days(start_date, end_date)
 
     print(f"\nWill process {len(dates)} date(s), every {STEP_DAYS} days:")
