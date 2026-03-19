@@ -19,13 +19,16 @@ import cleanup_intermediates
 
 
 DATE_FMT = "%Y%m%d"
-START_DATE = "20160316"
+START_DATE = "20260307"
 STEP_DAYS = 8
 SAMPLE_N = 21
 RANDOM_SEED = 42
 BACKUP_FULL_FILTERED = True
 
-BASE_PROCESSED_DIR = ROOT / "data" / "processed" / "model_scored_daily"
+# This is where filter.py writes
+BASE_INTERIM_DIR = ROOT / "data" / "interim" / "gdelt_event_context_daily"
+
+# This is just where you want the combined final sampled output
 COMBINED_OUTPUT = ROOT / "data" / "processed" / "sampled_training_pool.csv"
 
 
@@ -43,7 +46,7 @@ def generate_every_8_days(start_date: str, end_date: str | None = None) -> list[
 
 def get_day_dir(date: str) -> Path:
     dt = datetime.strptime(date, DATE_FMT)
-    return BASE_PROCESSED_DIR / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
+    return BASE_INTERIM_DIR / dt.strftime("%Y") / dt.strftime("%m") / dt.strftime("%d")
 
 
 def find_filtered_csv_for_date(date: str) -> Path | None:
@@ -53,35 +56,43 @@ def find_filtered_csv_for_date(date: str) -> Path | None:
         print(f"    [find] Day dir not found: {day_dir}")
         return None
 
-    csvs = sorted(day_dir.rglob("*.csv"))
+    csvs = sorted(day_dir.glob("*.csv"))
     if not csvs:
         print(f"    [find] No CSVs found in {day_dir}")
         return None
+
+    print(f"    [find] CSVs in {day_dir}:")
+    for p in csvs:
+        print(f"      - {p.name}")
 
     ranked = []
     for p in csvs:
         name = p.name.lower()
         score = 0
 
-        if "relevant" in name:
-            score -= 100
+        # prefer likely post-filter files
+        if "filter" in name:
+            score += 40
+        if "filtered" in name:
+            score += 40
+        if "dedup" in name:
+            score += 20
+        if "analyse" in name or "analyze" in name:
+            score += 10
+
+        # avoid obviously later-stage / backup/sample files
         if "sample" in name:
+            score -= 50
+        if "backup" in name:
             score -= 50
         if "enrich" in name:
             score -= 30
         if "title" in name or "description" in name:
             score -= 30
+        if "relevant" in name:
+            score -= 100
         if "final" in name:
             score -= 30
-
-        if "filter" in name:
-            score += 20
-        if "filtered" in name:
-            score += 20
-        if "dedup" in name:
-            score += 10
-        if "analyse" in name or "analyze" in name:
-            score += 5
 
         ranked.append((score, p))
 
@@ -89,41 +100,6 @@ def find_filtered_csv_for_date(date: str) -> Path | None:
     best_score, best_path = ranked[0]
 
     print(f"    [find] Using filtered candidate: {best_path} (score={best_score})")
-    return best_path
-
-
-def find_final_csv_for_date(date: str) -> Path | None:
-    day_dir = get_day_dir(date)
-
-    if not day_dir.exists():
-        print(f"    [final] Day dir not found: {day_dir}")
-        return None
-
-    csvs = sorted(day_dir.rglob("*.csv"))
-    if not csvs:
-        print(f"    [final] No CSVs found in {day_dir}")
-        return None
-
-    ranked = []
-    for p in csvs:
-        name = p.name.lower()
-        score = 0
-
-        if "relevant" in name:
-            score += 50
-        if "final" in name:
-            score += 20
-        if "sample" in name:
-            score -= 10
-        if "filtered" in name:
-            score -= 30
-
-        ranked.append((score, p))
-
-    ranked.sort(key=lambda x: (-x[0], str(x[1])))
-    best_score, best_path = ranked[0]
-
-    print(f"    [final] Using final candidate: {best_path} (score={best_score})")
     return best_path
 
 
@@ -147,7 +123,9 @@ def sample_filtered_candidates(
 
     n = min(sample_n, len(df))
     sampled = df.sample(n=n, random_state=random_seed).copy()
-    sampled.insert(0, "sample_date", date)
+
+    if "sample_date" not in sampled.columns:
+        sampled.insert(0, "sample_date", date)
 
     if BACKUP_FULL_FILTERED:
         df.to_csv(backup_path, index=False)
@@ -161,6 +139,43 @@ def sample_filtered_candidates(
     print(f"    [sample] Overwrote filtered CSV so downstream steps use only sample")
 
     return sampled
+
+
+def find_final_csv_for_date(date: str) -> Path | None:
+    day_dir = get_day_dir(date)
+
+    if not day_dir.exists():
+        print(f"    [final] Day dir not found: {day_dir}")
+        return None
+
+    csvs = sorted(day_dir.glob("*.csv"))
+    if not csvs:
+        print(f"    [final] No CSVs found in {day_dir}")
+        return None
+
+    ranked = []
+    for p in csvs:
+        name = p.name.lower()
+        score = 0
+
+        if "relevant" in name:
+            score += 50
+        if "final" in name:
+            score += 20
+        if "sample" in name:
+            score -= 10
+        if "backup" in name:
+            score -= 20
+        if "filtered" in name:
+            score -= 30
+
+        ranked.append((score, p))
+
+    ranked.sort(key=lambda x: (-x[0], str(x[1])))
+    best_score, best_path = ranked[0]
+
+    print(f"    [final] Using final candidate: {best_path} (score={best_score})")
+    return best_path
 
 
 def load_final_output(date: str) -> pd.DataFrame | None:
