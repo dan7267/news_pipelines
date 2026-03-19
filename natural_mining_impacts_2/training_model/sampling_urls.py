@@ -20,7 +20,7 @@ import cleanup_intermediates
 
 
 DATE_FMT = "%Y%m%d"
-START_DATE = "20260307"
+START_DATE = "20160311"
 STEP_DAYS = 8
 SAMPLE_N = 21
 RANDOM_SEED = 42
