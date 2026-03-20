@@ -14,7 +14,7 @@ import download
 import filter
 
 DATE_FMT = "%Y%m%d"
-START_DATE = "20190905"
+START_DATE = "20160311"
 STEP_DAYS = 8
 SAMPLE_N = 21
 RANDOM_SEED = 42
