@@ -12,6 +12,7 @@ import fix_title_description
 # import relevant_urls
 import relevant_urls_old as relevant_urls
 import cleanup_intermediates
+import webscraper
 
 
 DATE_FMT = "%Y%m%d"
@@ -85,8 +86,14 @@ def run_one_date(date: str) -> None:
     print("\n>> Step 5: Relevant URLs...")
     relevant_urls.main(date)
 
-    print("\n>> Cleaning up intermediates...")
+    print("\n>> Step 6: Cleaning up intermediates...")
     cleanup_intermediates.cleanup_day(date)
+
+    print("\n>> Step 7: Webscraper...")
+    webscraper.main(date)
+
+    print("\n>> Step 8: Mining Matcher...")
+    mining_matcher.main(date)
 
     print("\nDONE:", date)
 
