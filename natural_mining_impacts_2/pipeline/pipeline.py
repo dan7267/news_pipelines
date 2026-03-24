@@ -9,7 +9,8 @@ import download
 import filter
 import enrich
 import fix_title_description
-import relevant_urls
+# import relevant_urls
+import relevant_urls_old as relevant_urls
 import cleanup_intermediates
 
 
