@@ -182,7 +182,13 @@ def main(target_date: str, top_k: int = 0, force: bool = False):
 
     kept["url_normalized"].to_csv(urls_path_txt, index=False, header=False)
 
-    cols = ["url_normalized", "top_expert", "top_expert_p"]
+    cols = [
+        "url_normalized",
+        "title",
+        "meta_description",
+        "top_expert",
+        "top_expert_p",
+    ]
     for geo_col in ["actiongeo_lat", "actiongeo_lon"]:
         if geo_col in kept.columns:
             cols.append(geo_col)

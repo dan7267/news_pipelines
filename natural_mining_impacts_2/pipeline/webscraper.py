@@ -321,8 +321,6 @@ def scrape_article_with_wayback(url: str, timeout: int = 20, try_wayback: bool =
         "scrape_status": "",
         "scrape_error": "",
         "text": "",
-        "scraped_title": "",
-        "scraped_published_date": "unknown",
         "final_url": url,
         "http_status": None,
         "used_wayback": False,
@@ -345,8 +343,6 @@ def scrape_article_with_wayback(url: str, timeout: int = 20, try_wayback: bool =
             result["scrape_ok"] = True
             result["scrape_status"] = "live_ok_trafilatura"
             result["text"] = extracted["text"]
-            result["scraped_title"] = extracted["title"]
-            result["scraped_published_date"] = extracted["date"]
             return result
 
     np_res = newspaper_extract(url, timeout=timeout)
@@ -354,8 +350,6 @@ def scrape_article_with_wayback(url: str, timeout: int = 20, try_wayback: bool =
         result["scrape_ok"] = True
         result["scrape_status"] = "live_ok_newspaper"
         result["text"] = np_res.get("text", "") or ""
-        result["scraped_title"] = np_res.get("title", "") or ""
-        result["scraped_published_date"] = fallback_date_from_url(url)
         result["scrape_error"] = ""
         return result
 
@@ -377,8 +371,6 @@ def scrape_article_with_wayback(url: str, timeout: int = 20, try_wayback: bool =
                     result["scrape_ok"] = True
                     result["scrape_status"] = "wayback_ok"
                     result["text"] = extracted["text"]
-                    result["scraped_title"] = extracted["title"]
-                    result["scraped_published_date"] = extracted["date"]
                     result["final_url"] = wb["archive_url"]
                     result["scrape_error"] = ""
                     return result
@@ -420,8 +412,6 @@ def scrape_many(urls: list[str], max_workers: int = SCRAPE_MAX_WORKERS, timeout:
                     "scrape_status": "future_exception",
                     "scrape_error": f"{type(e).__name__}: {e}",
                     "text": "",
-                    "scraped_title": "",
-                    "scraped_published_date": "unknown",
                     "final_url": url,
                     "http_status": None,
                     "used_wayback": False,

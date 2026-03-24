@@ -49,12 +49,6 @@ MINING_PATTERNS = [
     r"\brare earth(?:s)?\b",
     r"\bconcentrator\b",
     r"\brefiner(?:y)?\b",
-    r"\bKonkola\b",
-    r"\bKCM\b",
-    r"\bMopani\b",
-    r"\bKansanshi\b",
-    r"\bLumwana\b",
-    r"\bFirst Quantum\b",
     r"\bBarrick\b",
     r"\bVedanta\b",
     r"\bZCCM[- ]?IH\b",
@@ -91,23 +85,48 @@ def _build_haystack(title: str, description: str, text: str) -> str:
     ]).strip()
 
 
-def matched_mining_patterns(title: str, description: str, text: str) -> list[str]:
+def matched_mining_terms(title: str, description: str, text: str) -> list[str]:
+    """
+    Return the actual matched words/phrases found in the text,
+    not just the regex patterns.
+    """
     haystack = _build_haystack(title, description, text)
     if not haystack:
         return []
 
     matches = []
+
     for pat in COMPILED_PATTERNS:
-        if pat.search(haystack):
-            matches.append(pat.pattern)
-    return matches
+        found = pat.findall(haystack)
+
+        if not found:
+            continue
+
+        for m in found:
+            if isinstance(m, tuple):
+                m = " ".join(str(x) for x in m if x)
+
+            m = str(m).strip()
+            if m:
+                matches.append(m)
+
+    # deduplicate while preserving order, and lowercase for consistency
+    deduped = []
+    seen = set()
+    for m in matches:
+        key = m.lower()
+        if key not in seen:
+            seen.add(key)
+            deduped.append(m)
+
+    return deduped
 
 
 def run_mining_matcher(
     in_path: Path,
     out_path: Path,
     max_rows: Optional[int] = None,
-    include_match_details: bool = False,
+    include_match_details: bool = True,
 ) -> Path:
     if not in_path.exists():
         raise FileNotFoundError(f"Input not found: {in_path}")
@@ -125,7 +144,6 @@ def run_mining_matcher(
         row = r.to_dict()
 
         title = _norm_str(row.get("title"))
-        # support either column name just in case
         description = _norm_str(row.get("meta_description", row.get("description", "")))
         text = _norm_str(row.get("text"))
 
@@ -134,7 +152,11 @@ def run_mining_matcher(
         keyword_hit = bool(COMPILED_MINING_REGEX.search(haystack)) if nonempty_text else False
 
         scrape_ok_raw = row.get("scrape_ok", False)
-        scrape_ok = str(scrape_ok_raw).lower() in {"true", "1", "yes"} if not isinstance(scrape_ok_raw, bool) else scrape_ok_raw
+        scrape_ok = (
+            str(scrape_ok_raw).lower() in {"true", "1", "yes"}
+            if not isinstance(scrape_ok_raw, bool)
+            else scrape_ok_raw
+        )
         scrape_failed = not scrape_ok
 
         row["mining_keyword_score"] = 1 if keyword_hit else 0
@@ -142,7 +164,7 @@ def run_mining_matcher(
         row["mining_keyword_force_keep"] = bool(scrape_failed)
 
         if include_match_details and keyword_hit:
-            matches = matched_mining_patterns(title, description, text)
+            matches = matched_mining_terms(title, description, text)
             row["mining_keyword_match_detail"] = "; ".join(matches)
             row["mining_keyword_matches"] = "|".join(matches)
         else:
@@ -202,10 +224,9 @@ def main(target_date: str, force: bool = False, max_rows: Optional[int] = None) 
         in_path=in_path,
         out_path=out_path,
         max_rows=max_rows,
-        include_match_details=False,
+        include_match_details=True,
     )
 
-    # also save a flat state copy if useful for later stages
     df = pd.read_csv(out_path, encoding="utf-8", engine="python")
     df.to_csv(state_out, index=False)
 
