@@ -32,3 +32,5 @@ outputs/
 # Temporary files
 *.tmp
 *.swp
+
+*.pem
