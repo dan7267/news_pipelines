@@ -737,3 +737,59 @@ if "mineral_type" in df.columns and len(mineral_counts) > 0:
     plt.close()
 
 print(f"\nDone. Outputs saved to: {OUT_DIR}")
+
+
+from urllib.parse import urlparse
+
+# =========================
+# WEBSITE ANALYSIS
+# =========================
+
+def extract_domain(url):
+    try:
+        return urlparse(url).netloc.lower().replace("www.", "")
+    except:
+        return "unknown"
+
+df["domain"] = df["sourceurl"].apply(extract_domain)
+
+# Count occurrences
+domain_counts = df["domain"].value_counts().reset_index()
+domain_counts.columns = ["domain", "count"]
+
+print("\nTop domains:\n")
+print(domain_counts.head(20))
+
+# Save full list
+domain_counts.to_csv(OUT_DIR / "domain_counts.csv", index=False)
+
+ZAMBIAN_NEWS_SITES = [
+    "lusakatimes.com",
+    "zambianobserver.com",
+    "diggers.news",
+    "mwebantu.com",
+    "znbc.co.zm",
+    "daily-mail.co.zm",
+    "times.co.zm",
+    "zambiawatchdog.com",
+    "tumfweko.com",
+    "newsdiggers.com",  # alias sometimes used
+    "diggers.news",
+]
+present_sites = set(domain_counts["domain"])
+expected_sites = set(ZAMBIAN_NEWS_SITES)
+
+found = expected_sites & present_sites
+missing = expected_sites - present_sites
+
+print("\nZambian news site coverage:")
+print(f"Found ({len(found)}): {sorted(found)}")
+print(f"Missing ({len(missing)}): {sorted(missing)}")
+df["is_zambian_source"] = df["domain"].isin(ZAMBIAN_NEWS_SITES)
+
+zambian_share = df["is_zambian_source"].mean()
+
+print(f"\n% of articles from Zambian news sites: {zambian_share:.2%}")
+print("\nMid-frequency domains (potentially relevant):\n")
+print(domain_counts[(domain_counts["count"] > 20) & 
+                    (~domain_counts["domain"].isin(ZAMBIAN_NEWS_SITES))].head(20))
