@@ -2,14 +2,15 @@ import pandas as pd
 import numpy as np
 import matplotlib.pyplot as plt
 from pathlib import Path
+import re
 
 # =========================
 # 1. LOAD DATA
 # =========================
 
 BASE_DIR = Path(__file__).resolve().parent
-PATH = BASE_DIR / "combined_2016_2026.csv"
-OUT_DIR = BASE_DIR / "analysis_outputs"
+PATH = BASE_DIR / "results" / "combined_2016_2026.csv"
+OUT_DIR = BASE_DIR / "results" / "analysis_outputs"
 OUT_DIR.mkdir(exist_ok=True)
 
 START_DATE = pd.Timestamp("2016-03-16")
@@ -19,6 +20,174 @@ df = pd.read_csv(PATH)
 
 print("Rows:", len(df))
 print("Columns:", df.columns.tolist())
+
+# -------------------------
+# Region cleaning helpers
+# -------------------------
+
+VALID_PROVINCES = [
+    "Central",
+    "Copperbelt",
+    "Eastern",
+    "Luapula",
+    "Lusaka",
+    "Muchinga",
+    "Northern",
+    "North-Western",
+    "Southern",
+    "Western",
+]
+
+# Use lowercase keys only
+CITY_TO_PROVINCE = {
+    # Central
+    "kabwe": "Central",
+    "kapiri mposhi": "Central",
+    "mkushi": "Central",
+    "serenje": "Central",
+    "mumbwa": "Central",
+    "mumbwa district": "Central",
+
+    # Copperbelt
+    "ndola": "Copperbelt",
+    "kitwe": "Copperbelt",
+    "chingola": "Copperbelt",
+    "mufulira": "Copperbelt",
+    "luanshya": "Copperbelt",
+    "chililabombwe": "Copperbelt",
+    "kalulushi": "Copperbelt",
+    "lufwanyama": "Copperbelt",
+    "chambishi": "Copperbelt",
+    "kasumbalesa": "Copperbelt",
+    "konkola": "Copperbelt",
+    "nchanga": "Copperbelt",
+    "nkana": "Copperbelt",
+
+    # Eastern
+    "chipata": "Eastern",
+    "petauke": "Eastern",
+    "katete": "Eastern",
+    "lundazi": "Eastern",
+
+    # Luapula
+    "mansa": "Luapula",
+    "samfya": "Luapula",
+    "kawambwa": "Luapula",
+    "mwense": "Luapula",
+
+    # Lusaka
+    "lusaka": "Lusaka",
+    "chilanga": "Lusaka",
+    "kafue": "Lusaka",
+    "chongwe": "Lusaka",
+    "lower zambezi national park": "Lusaka",
+
+    # Muchinga
+    "chinsali": "Muchinga",
+    "nakonde": "Muchinga",
+    "mpika": "Muchinga",
+    "isoka": "Muchinga",
+
+    # Northern
+    "kasama": "Northern",
+    "mbala": "Northern",
+    "mporokoso": "Northern",
+    "luwingu": "Northern",
+
+    # North-Western
+    "solwezi": "North-Western",
+    "kalumbila": "North-Western",
+    "kasempa": "North-Western",
+    "mwinilunga": "North-Western",
+    "kabompo": "North-Western",
+    "lumwana township": "North-Western",
+    "northwest zambia": "North-Western",
+
+    # Southern
+    "choma": "Southern",
+    "livingstone": "Southern",
+    "mazabuka": "Southern",
+    "monze": "Southern",
+    "sinazongwe": "Southern",
+    "chirundu": "Southern",
+    "kazungula": "Southern",
+
+    # Western
+    "mongu": "Western",
+    "senanga": "Western",
+    "sesheke": "Western",
+    "kaoma": "Western",
+}
+
+PROVINCE_ALIASES = {
+    "central": "Central",
+    "central province": "Central",
+
+    "copperbelt": "Copperbelt",
+    "copperbelt province": "Copperbelt",
+    "copper belt": "Copperbelt",
+    "zambia's copper belt": "Copperbelt",
+
+    "eastern": "Eastern",
+    "eastern province": "Eastern",
+
+    "luapula": "Luapula",
+    "luapula province": "Luapula",
+
+    "lusaka": "Lusaka",
+    "lusaka province": "Lusaka",
+
+    "muchinga": "Muchinga",
+    "muchinga province": "Muchinga",
+
+    "northern": "Northern",
+    "northern province": "Northern",
+
+    "north-western": "North-Western",
+    "north western": "North-Western",
+    "northwestern": "North-Western",
+    "north-western province": "North-Western",
+    "north western province": "North-Western",
+
+    "southern": "Southern",
+    "southern province": "Southern",
+
+    "western": "Western",
+    "western province": "Western",
+}
+
+def normalise_text(x):
+    if pd.isna(x) or x is None:
+        return None
+    x = str(x).strip().lower()
+    x = re.sub(r"\s+", " ", x)
+    return x
+
+def clean_region_to_province(val):
+    if pd.isna(val) or val is None:
+        return np.nan
+
+    raw = normalise_text(val)
+
+    # Exact province match
+    if raw in PROVINCE_ALIASES:
+        return PROVINCE_ALIASES[raw]
+
+    # Exact city match
+    if raw in CITY_TO_PROVINCE:
+        return CITY_TO_PROVINCE[raw]
+
+    # Substring province match
+    for alias, province in PROVINCE_ALIASES.items():
+        if alias in raw:
+            return province
+
+    # Substring city match
+    for city, province in CITY_TO_PROVINCE.items():
+        if city in raw:
+            return province
+
+    return np.nan
 
 
 # =========================
@@ -53,6 +222,73 @@ df = df[df["sqldate"].notna()].copy()
 df = df[df["sqldate"] >= START_DATE].copy()
 
 print("Rows after optional filters and date restriction:", len(df))
+
+# =========================
+# 2B. PRINT RAW REGION VARIATIONS
+# =========================
+
+if "region" in df.columns:
+    raw_region_counts = (
+        df["region"]
+        .dropna()
+        .astype(str)
+        .str.strip()
+        .value_counts()
+    )
+
+    print("\n=== RAW REGION VARIATIONS ===")
+    print(raw_region_counts.to_string())
+
+    raw_region_counts.rename_axis("raw_region").reset_index(name="count").to_csv(
+        OUT_DIR / "raw_region_variations.csv",
+        index=False
+    )
+
+    # =========================
+# 2C. CLEAN REGION -> TRUE ZAMBIAN PROVINCE
+# =========================
+
+if "region" in df.columns:
+    print("\n=== REGION COLUMN EXISTS ===")
+    print("region" in df.columns)
+
+    print("\n=== RAW REGION SAMPLE ===")
+    print(df["region"].dropna().astype(str).head(30).to_string(index=False))
+
+    print("\n=== RAW REGION VALUE COUNTS ===")
+    print(df["region"].dropna().astype(str).str.strip().value_counts().head(50).to_string())
+    df["region_clean"] = df["region"].apply(clean_region_to_province)
+    # print("\n=== REGION CLEAN AFTER CREATION ===")
+    # print(df["region_clean"].value_counts(dropna=False).head(20))
+
+    region_mapping_audit = (
+        df[["region", "region_clean"]]
+        .dropna(subset=["region"])
+        .drop_duplicates()
+        .sort_values(["region_clean", "region"])
+    )
+
+    # print("\n=== REGION MAPPING AUDIT ===")
+    # print(region_mapping_audit.to_string(index=False))
+
+    region_mapping_audit.to_csv(OUT_DIR / "region_mapping_audit.csv", index=False)
+
+    unmapped_regions = (
+        df.loc[df["region"].notna() & df["region_clean"].isna(), "region"]
+        .astype(str)
+        .str.strip()
+        .value_counts()
+    )
+
+    print("\n=== UNMAPPED REGION VALUES ===")
+    if len(unmapped_regions) > 0:
+        print(unmapped_regions.to_string())
+        unmapped_regions.rename_axis("unmapped_region").reset_index(name="count").to_csv(
+            OUT_DIR / "unmapped_region_values.csv",
+            index=False
+        )
+    else:
+        print("None")
 
 
 # =========================
@@ -92,6 +328,8 @@ for c in impact_cols:
         df[c] = df[c].apply(split_pipepipe)
 
 df_imp = df.copy()
+print("\n=== REGION CLEAN IN df_imp ===")
+print(df_imp["region_clean"].value_counts(dropna=False).head(20))
 df_imp = df_imp.apply(lambda row: pad_lists(row, impact_cols), axis=1)
 df_imp = df_imp.explode(impact_cols, ignore_index=True)
 
@@ -224,33 +462,35 @@ if len(yearly_impacts) >= 2 and yearly_impacts.iloc[0] > 0:
 # 9. REGION-LEVEL STATS
 # =========================
 
-if "region" in df_esg.columns:
+if "region_clean" in df_esg.columns:
     region_article_esg = (
-        df_esg.dropna(subset=["region"])[["sourceurl", "region", "impact_level1_clean"]]
+        df_esg.dropna(subset=["region_clean"])[["sourceurl", "region_clean", "impact_level1_clean"]]
         .drop_duplicates()
     )
 
     region_counts = (
-        region_article_esg["region"]
+        region_article_esg["region_clean"]
         .value_counts(dropna=True)
-        .head(15)
+        .reindex(VALID_PROVINCES, fill_value=0)
+        .sort_values(ascending=False)
     )
 
     region_by_esg = (
         region_article_esg
-        .groupby(["region", "impact_level1_clean"])
+        .groupby(["region_clean", "impact_level1_clean"])
         .size()
         .unstack(fill_value=0)
+        .reindex(index=VALID_PROVINCES, fill_value=0)
         .reindex(columns=VALID_ESG, fill_value=0)
     )
     region_by_esg["total"] = region_by_esg.sum(axis=1)
     region_by_esg = region_by_esg.sort_values("total", ascending=False)
 
-    print("\n=== TOP REGIONS ===")
+    print("\n=== CLEAN PROVINCE COUNTS ===")
     print(region_counts)
 
-    print("\n=== REGION x ESG ===")
-    print(region_by_esg.head(15))
+    print("\n=== PROVINCE x ESG ===")
+    print(region_by_esg)
 
 
 # =========================
@@ -373,8 +613,8 @@ save_series_csv(monthly_impacts, OUT_DIR / "monthly_article_esg_counts.csv", "mo
 yearly_by_esg.to_csv(OUT_DIR / "yearly_by_esg.csv")
 monthly_by_esg.to_csv(OUT_DIR / "monthly_by_esg.csv")
 
-if "region" in df_esg.columns:
-    save_series_csv(region_counts, OUT_DIR / "region_counts.csv", "region")
+if "region_clean" in df_esg.columns:
+    save_series_csv(region_counts, OUT_DIR / "region_counts.csv", "province")
     region_by_esg.to_csv(OUT_DIR / "region_by_esg.csv")
 
 if "mining_company" in df_esg.columns:
@@ -435,17 +675,26 @@ plt.tight_layout()
 plt.savefig(OUT_DIR / "chart_monthly_by_esg_from_2016_03_16.png", dpi=300)
 plt.close()
 
-# ---- Chart 5: Top regions
-if "region" in df_esg.columns and len(region_counts) > 0:
-    top_regions = region_counts.head(10).sort_values()
-    plt.figure(figsize=(9, 6))
-    top_regions.plot(kind="barh")
-    plt.title("Top 10 Regions by ESG Article Count")
-    plt.xlabel("Number of articles")
-    plt.ylabel("Region")
-    plt.tight_layout()
-    plt.savefig(OUT_DIR / "chart_top_regions.png", dpi=300)
-    plt.close()
+# ---- Chart 5: Provinces
+print("\n=== REGION COUNTS DEBUG ===")
+print(region_counts)
+
+print("\n=== NON-ZERO REGION COUNTS DEBUG ===")
+print(region_counts[region_counts > 0])
+if "region_clean" in df_esg.columns and len(region_counts) > 0:
+    top_regions = region_counts[region_counts > 0].sort_values()
+
+    if len(top_regions) > 0:
+        plt.figure(figsize=(9, 6))
+        top_regions.plot(kind="barh")
+        plt.title("Zambian Provinces by ESG Article Count")
+        plt.xlabel("Number of articles")
+        plt.ylabel("Province")
+        plt.tight_layout()
+        plt.savefig(OUT_DIR / "chart_top_regions.png", dpi=300)
+        plt.close()
+    else:
+        print("\nNo non-zero province counts to plot.")
 
 # ---- Chart 6: Top companies
 if "mining_company" in df_esg.columns and len(company_counts) > 0:
