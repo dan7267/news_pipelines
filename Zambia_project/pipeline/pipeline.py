@@ -5,9 +5,10 @@ End-to-end pipeline runner.
 Order:
   1) download.py
   2) analyse_raw.py
-  3) fetch_metadata.py
-  4) first_classifier.py
-  5) second_classifier.py
+  3) mining_matcher.py
+  4) fetch_metadata.py
+  5) first_classifier.py
+  6) second_classifier.py
 
 Interactive inputs (if not provided as CLI args):
   - start date (YYYY-MM-DD)
